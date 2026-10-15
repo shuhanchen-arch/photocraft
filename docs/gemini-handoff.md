@@ -13,20 +13,22 @@
 2. docs/gemini-generative-fill.md（这个功能的完整设计，分 4 步）
 3. docs/gemini-handoff.md（今天做到哪了、踩过的坑）
 
-当前状态：在 feature/gemini-image 分支上，第 1 步已完成并全部测试通过：
-- crates/genai：独立的 Gemini 客户端（Interactions API，ureq + rustls）
-- crates/engine/src/genai_cmds.rs：命令 edit.generativeFill（纯文字生成，结果铺满选区外接框，选区作图层蒙版，后台任务，一次撤销）
-- crates/ui-egui/src/genfill_ui.rs：提示词对话框 + 偏好设置 › AI Generation 页（模型、输出尺寸、API key）
-- 还没做过真实的 Gemini 端到端调用。
+当前状态（2026-10-15 晚）：在 feature/gemini-image 分支上，第 1、2 步已实现，所有测试通过，已用真实 key 端到端跑通：
+- crates/genai：Gemini 客户端（Interactions API）。模型只接受 response_format.mime_type = image/jpeg。
+- crates/engine/src/genai_cmds.rs：edit.generativeFill。默认"参考周围画面"：上传一张图（选区周围的窗口，
+  选区外 24px 处画红色轮廓线，红线落在最终被蒙版遮住的地方），结果缩放回窗口、转回文档配置文件、
+  对齐校正（genai_align.rs）、环带相似度校验 + 无效时自动重试一次、蒙版扩 4px 羽化 4px 贴回。
+  参数 sampleLayer（all / currentAndBelow / current）决定从哪些图层取周围画面。
+- crates/ui-egui/src/genfill_ui.rs：对话框（提示词、参考周围画面、取样、模型、尺寸、羽化）+ 偏好设置 › AI Generation。
+- 已知问题见 docs/gemini-handoff.md 第三部分（选区边缘接缝的明暗/色差最明显）。
 
-今天要做的事，按顺序：
+这次要做的事，按顺序：
 1. 确认环境能编译：cargo test -p photocraft-genai，cargo test -p photocraft-engine --lib genai，
    cargo test -p photocraft-ui-egui --lib -- genfill prefs_ui i18n menus dialogs
-2. 帮我跑起 app（cargo run -p photocraft），我会在 编辑 › 首选项 › AI Generation 里自己填 key，
-   然后框选、Edit › Generative Fill… 试生成。根据真实返回修 bug（尤其是 genai 里的请求/返回 JSON 格式、模型名，
-   如果和 Google 当前文档不符，以官方文档 https://ai.google.dev/gemini-api/docs/image-generation 为准）。
-3. 端到端跑通后，开始设计文档里的第 2 步"结合场景"：把选区四周的上下文截图 + 洋红色标记图 + 提示词一起上传，
-   结果缩放回窗口、用选区蒙版（扩 4px 羽化 4px）贴回。先给我方案确认再写代码。
+2. 读 docs/gemini-handoff.md 第三部分的已知问题，先做"色彩校正"（设计文档 3.4 第 4 条）：
+   比较选区外环带上生成图和原图的均值、方差，对生成图做线性颜色匹配，解决接缝处的明暗和色差。先给我方案确认再写代码。
+3. 我在家里的 4090 上装好 ComfyUI + FLUX.1 Fill [dev] 后，接一个"本地（ComfyUI）"后端：
+   PhotoCraft 通过 HTTP 调本机 / 局域网 / Tailscale 地址上的 ComfyUI，原生传蒙版，做真正的局部重绘。先给我方案确认。
 
 规则：每次改动都要带测试；新的 tl!("…") 界面文字和菜单文字必须在所有 complete_menus 语言的 .tsv 里有翻译，
 否则 i18n 测试会失败；git push 之前先问我；不要把 API key 写进任何文件、命令或聊天记录。
@@ -72,3 +74,44 @@
 2. 第 2 步：结合周围场景（上下文窗口、宽高比对齐、标记图、提示词模板、羽化贴回）。
 3. 第 3 步：选区下方的浮动提示栏、首次使用的隐私提示。
 4. 第 4 步：色彩校正、放大过多时提醒、多候选。
+
+## 三、第二次会话（2026-10-15 晚，家里的笔记本）
+
+### 1. 环境
+- 这台是家里的笔记本：RTX 3070 Ti Laptop（8GB），Rust 1.97，VS 2019。4090 在家里另一台电脑上。
+- 原来只有 Windows SDK 10.0.16299，engine 测试链接失败（winsafe 找不到 Get/SetThreadDpiHostingBehavior）；
+  装了 Windows SDK 10.0.26100 后正常。新机器编译前先确认 SDK 版本。
+- 还装了 wasm32-unknown-unknown 目标（cargo xtask wasm 要用）。
+- 家里 rustfmt 和公司版本不同，对没改过的文件会改换行；只格式化自己改的文件（rustfmt --edition 2024 <文件>）。
+
+### 2. 做了什么（按提交顺序）
+| 提交 | 内容 |
+|---|---|
+| 0aaa093e | 第一次真实调用：模型拒收 image/png 输出（HTTP 400），改为请求 image/jpeg |
+| 7e0675dd | 第 2 步：上下文窗口 + 宽高比对齐、sRGB 上传、结果转回文档配置文件（P3 等文档不再偏色）、蒙版扩 4 羽化 4、"参考周围画面"开关（20 种语言） |
+| 3c5563f9 | 对齐校正 genai_align.rs：模型重画整张图时常平移几个像素，在选区外环带上搜索平移后再贴 |
+| a87f2d8c | 改成单图 + 选区外红色轮廓线；环带相似度校验 + 自动重试一次；取样图层 sampleLayer；删掉已停用的 gemini-2.5-flash-image |
+
+### 3. 已知问题（还没解决）
+1. **选区边缘接缝明显**：连续生成几次后，选区内外的明暗/颜色对不上（例：选区右边缘内侧偏暗，外侧沙滩偏亮，
+   虚线处能看到一条分界）。原因：Gemini 是通用编辑模型，会重画整张图，整体曝光和色调会漂移，
+   而贴回时只保留选区内的像素。计划：设计文档 3.4 第 4 条的色彩校正（环带上做均值/方差线性匹配），
+   必要时再加宽羽化或做梯度域（泊松）融合。
+2. **生成内容不稳定**：同样的提示词，有时效果很好，有时差很多；模型偶尔不照"只改红线内"的要求做。
+3. **连续生成会累积**：默认取样"所有图层"会把之前的生成结果当成周围画面。要每次都从原图出发，
+   选中原图层并把取样设为"当前图层"。新图层放在当前图层上方（和 Photoshop 一样），可能被更早的生成图层盖住。
+4. 放大过度提醒、多候选、首次使用的隐私提示还没做（设计文档第 3、4 步）。
+
+### 4. 试过又放弃的做法（别再走回头路）
+- 第二张图用"照片 + 半透明洋红标记"：模型把洋红色叠进选区，连续生成越来越紫。
+- 第二张图用黑白蒙版：模型把蒙版的白色叠进选区（白色光晕、大片纯白）。
+- 结论：给 Gemini 发第二张图、或在选区内画标记，都有被合成进结果的风险。现在只发一张图，标记画在选区外被遮住的地方。
+
+### 5. 关于换模型（讨论结论）
+- 真正的局部重绘模型（FLUX.1 Fill、Stability Inpaint、Vertex Imagen 编辑）原生接受蒙版，只在蒙版内生成，
+  不平移、不渗色、接缝自然；但看不到选区里原来的内容，做不了"把船改成红色"这类修改。
+- 价格（2026-10-15 官方价）：gemini-nano-banana-2.1 每张 1K $0.034、2K $0.050、4K $0.113；
+  FLUX.1 Fill [pro] 约 $0.05/张（第三方数据），常用尺寸下两者差不多。
+- 计划：在家里的 4090（24GB）上用 ComfyUI 跑 FLUX.1 Fill [dev]（fp8，约 17GB 模型文件，估计 15–25 秒一张，
+  非商业许可，个人使用可以）。PhotoCraft 加"本地（ComfyUI）"后端，通过 HTTP 调用，项目里不加 Python。
+  地址只放行本机、局域网私有地址和 Tailscale 地址；ComfyUI 没有登录验证，不能暴露到公网。
