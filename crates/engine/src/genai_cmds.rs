@@ -57,7 +57,9 @@ fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>> {
     }
 }
 
-fn params(p: &Value) -> Result<Params> {
+/// `p` validated, with the model, size and key from Preferences › AI Generation where `p` has
+/// none (the key then falls back to the `GEMINI_API_KEY` environment variable).
+fn params(p: &Value, ai: &crate::prefs::Ai) -> Result<Params> {
     if !p.is_object() {
         return Err(bad("params must be a JSON object with a `prompt`"));
     }
@@ -65,13 +67,20 @@ fn params(p: &Value) -> Result<Params> {
     if prompt.is_empty() {
         return Err(bad("`prompt` is required: describe what to generate in the selection"));
     }
-    let model = opt_str(p, "model")?.map(str::trim).filter(|m| !m.is_empty()).unwrap_or(photocraft_genai::DEFAULT_MODEL).to_string();
-    let image_size = match opt_str(p, "imageSize")?.map(str::trim) {
+    let model = opt_str(p, "model")?
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .or_else(|| Some(ai.model.trim()).filter(|m| !m.is_empty()))
+        .unwrap_or(photocraft_genai::DEFAULT_MODEL)
+        .to_string();
+    // An unusable saved size is ignored (auto) rather than blocking every generation.
+    let saved_size = Some(ai.image_size.trim()).filter(|s| photocraft_genai::IMAGE_SIZES.contains(s));
+    let image_size = match opt_str(p, "imageSize")?.map(str::trim).or(saved_size) {
         None | Some("" | "auto") => None,
         Some(s) if photocraft_genai::IMAGE_SIZES.contains(&s) => Some(s.to_string()),
         Some(s) => return Err(bad(format!("`imageSize` must be auto, 1K, 2K or 4K, not `{s}`"))),
     };
-    let api_key = opt_str(p, "apiKey")?.map(str::to_string);
+    let api_key = opt_str(p, "apiKey")?.map(str::to_string).or_else(|| Some(ai.api_key.trim().to_string()).filter(|k| !k.is_empty()));
     let feather = match p.get("feather") {
         None | Some(Value::Null) => 0.0,
         Some(v) => match v.as_f64() {
@@ -111,7 +120,7 @@ fn cover(w: u32, h: u32, target: Rect) -> Option<(f64, i32, i32)> {
 }
 
 fn run(s: &mut Session, p: &Value) -> Result<Value> {
-    let prm = params(p)?;
+    let prm = params(p, &s.prefs().ai)?;
     has_selection(s).map_err(bad)?;
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let doc = st.doc.clone();
@@ -195,7 +204,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Generative Fill…",
         menu: &["Edit"],
         shortcut: None,
-        params: r##"{"prompt":string (what to generate in the selection), "model":string? (default gemini-nano-banana-2.1), "imageSize":"auto"|"1K"|"2K"|"4K"?, "feather":px? (mask feather, default 0), "apiKey":string? (default: GEMINI_API_KEY environment variable)} -> a new layer above the active one, masked by the selection"##,
+        params: r##"{"prompt":string (what to generate in the selection), "model":string? (default gemini-nano-banana-2.1), "imageSize":"auto"|"1K"|"2K"|"4K"?, "feather":px? (mask feather, default 0), "apiKey":string?} (model, imageSize and apiKey default to Edit › Preferences › AI Generation; the key then to the GEMINI_API_KEY environment variable) -> a new layer above the active one, masked by the selection"##,
         enabled: has_selection,
         run,
         journal: true,
@@ -231,6 +240,25 @@ mod tests {
         ] {
             assert!(matches!(s.execute(ID, p.clone()), Err(EngineError::BadParams { .. })), "{p}");
         }
+    }
+
+    #[test]
+    fn preferences_fill_in_what_the_params_leave_out() {
+        let ai = crate::prefs::Ai { model: "gemini-3-pro-image".into(), api_key: " pref-key ".into(), image_size: "2K".into() };
+        let p = params(&json!({"prompt": "a cat"}), &ai).unwrap();
+        assert_eq!((p.model.as_str(), p.image_size.as_deref(), p.api_key.as_deref()), ("gemini-3-pro-image", Some("2K"), Some("pref-key")));
+        let p = params(&json!({"prompt": "a cat", "model": "gemini-2.5-flash-image", "imageSize": "auto", "apiKey": "param-key"}), &ai).unwrap();
+        assert_eq!((p.model.as_str(), p.image_size.as_deref(), p.api_key.as_deref()), ("gemini-2.5-flash-image", None, Some("param-key")));
+        // Empty or unusable saved values fall back: default model, auto size, no key (environment).
+        let empty = crate::prefs::Ai { model: " ".into(), api_key: "".into(), image_size: "huge".into() };
+        let p = params(&json!({"prompt": "a cat"}), &empty).unwrap();
+        assert_eq!((p.model.as_str(), p.image_size, p.api_key), (photocraft_genai::DEFAULT_MODEL, None, None));
+    }
+
+    #[test]
+    fn the_saved_key_is_never_in_debug_output() {
+        let ai = crate::prefs::Ai { api_key: "secret-xyz".into(), ..Default::default() };
+        assert!(!format!("{ai:?}").contains("secret-xyz"));
     }
 
     #[test]

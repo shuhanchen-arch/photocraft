@@ -1,7 +1,9 @@
 //! Edit › Generative Fill…: the prompt dialog in front of `edit.generativeFill` (Gemini image
 //! generation into the selection). The fields are the command's params, so `ui.dialog.set` /
-//! `ui.dialog.confirm` drive it like any dialog. OK remembers the model, size and feather (not the
-//! prompt or any key) in the preferences (`dialogs["edit.generativeFill"]`).
+//! `ui.dialog.confirm` drive it like any dialog. The model and size start from Edit › Preferences ›
+//! AI Generation and OK saves them back there; the feather is remembered in
+//! `dialogs["edit.generativeFill"]`. The prompt is never remembered. [`prefs_rows`] draws the
+//! AI Generation page of Preferences (model, size and the masked API key field).
 
 use serde_json::{Map, Value, json};
 
@@ -11,16 +13,17 @@ pub const COMMAND: &str = photocraft_engine::genai_cmds::ID;
 const MARK: &str = "__generativeFill";
 /// Params sent to the engine.
 const KEYS: [&str; 4] = ["prompt", "model", "imageSize", "feather"];
-/// Params remembered for next time.
-const REMEMBERED: [&str; 3] = ["model", "imageSize", "feather"];
-/// The models offered in the dialog (any other name can be passed through the command).
-const MODELS: [(&str, &str); 4] = [
+/// Params remembered in `dialogs[COMMAND]` (model and size live in `prefs.ai`).
+const REMEMBERED: [&str; 1] = ["feather"];
+/// The models offered in the dialog and Preferences (any other name can be passed through the
+/// command or `prefs.set`).
+pub const MODELS: [(&str, &str); 4] = [
     ("gemini-nano-banana-2.1", "Nano Banana 2.1 (default)"),
     ("gemini-3-pro-image", "Nano Banana Pro (best quality)"),
     ("gemini-3.1-flash-lite-image", "Nano Banana 2 Lite (fastest, 1K only)"),
     ("gemini-2.5-flash-image", "Nano Banana (legacy)"),
 ];
-const SIZES: [(&str, &str); 4] = [("auto", "Auto"), ("1K", "1K"), ("2K", "2K"), ("4K", "4K")];
+pub const SIZES: [(&str, &str); 4] = [("auto", "Auto"), ("1K", "1K"), ("2K", "2K"), ("4K", "4K")];
 
 pub fn owns(fields: &Map<String, Value>) -> bool {
     fields.contains_key(MARK)
@@ -42,9 +45,13 @@ pub fn fields(app: &PhotocraftApp) -> Map<String, Value> {
     f.insert("__command".into(), json!(COMMAND));
     f.insert("__label".into(), json!("Generative Fill…"));
     f.insert("prompt".into(), json!(""));
-    f.insert("model".into(), json!(MODELS[0].0));
-    f.insert("imageSize".into(), json!("auto"));
+    let ai = &app.session.prefs().ai;
+    let model = if valid("model", &json!(ai.model)) { ai.model.clone() } else { MODELS[0].0.to_string() };
+    let size = if valid("imageSize", &json!(ai.image_size)) { ai.image_size.clone() } else { "auto".to_string() };
+    f.insert("model".into(), json!(model));
+    f.insert("imageSize".into(), json!(size));
     f.insert("feather".into(), json!(0.0));
+    f.insert("__hasKey".into(), json!(has_key(app)));
     if let Some(Value::Object(saved)) = app.session.prefs().dialogs.get(COMMAND) {
         for key in REMEMBERED {
             if let Some(value) = saved.get(key).filter(|v| valid(key, v)) {
@@ -53,6 +60,11 @@ pub fn fields(app: &PhotocraftApp) -> Map<String, Value> {
         }
     }
     f
+}
+
+/// Whether a key is available: in Preferences or the environment.
+fn has_key(app: &PhotocraftApp) -> bool {
+    !app.session.prefs().ai.api_key.trim().is_empty() || std::env::var(photocraft_genai::API_KEY_ENV).is_ok_and(|k| !k.trim().is_empty())
 }
 
 pub fn open(app: &mut PhotocraftApp) -> u64 {
@@ -73,7 +85,17 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
     let result = app.run(COMMAND, p);
     if result.is_ok() {
         let remembered: Map<String, Value> = REMEMBERED.iter().filter_map(|k| f.get(*k).map(|v| (k.to_string(), v.clone()))).collect();
-        app.session.prefs.edit(|prefs| prefs.dialogs.insert(COMMAND.into(), Value::Object(remembered)));
+        let model = f.get("model").filter(|v| valid("model", v)).and_then(Value::as_str).map(str::to_string);
+        let size = f.get("imageSize").filter(|v| valid("imageSize", v)).and_then(Value::as_str).map(str::to_string);
+        app.session.prefs.edit(|prefs| {
+            prefs.dialogs.insert(COMMAND.into(), Value::Object(remembered));
+            if let Some(m) = model {
+                prefs.ai.model = m;
+            }
+            if let Some(s) = size {
+                prefs.ai.image_size = s;
+            }
+        });
     }
     result
 }
@@ -113,7 +135,53 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         }
     });
     ui.add_space(4.0);
-    ui.weak(tl!("The prompt is sent to Google Gemini. The API key is read from the GEMINI_API_KEY environment variable."));
+    if f.get("__hasKey").and_then(Value::as_bool) == Some(false) {
+        ui.colored_label(crate::theme::Tokens::get(ui.ctx()).warning, tl!("No API key yet: add one in Edit › Preferences › AI Generation."));
+    }
+    ui.weak(tl!("The prompt is sent to Google Gemini."));
+}
+
+/// Preferences › AI Generation: model, output size and the API key (masked unless Show is on).
+/// `obj` is the dialog's working copy of the `ai` section; Apply / OK commit it with `prefs.set`.
+pub fn prefs_rows(ui: &mut egui::Ui, obj: &mut Map<String, Value>) {
+    ui.spacing_mut().item_spacing.y = 8.0;
+    ui.horizontal(|ui| {
+        ui.label(tl!("Model"));
+        let mut model = obj.get("model").and_then(Value::as_str).unwrap_or(MODELS[0].0).to_string();
+        let mut options: Vec<(String, &str)> = MODELS.iter().map(|(id, label)| (id.to_string(), *label)).collect();
+        // A model set through prefs.set that the list doesn't know stays selectable.
+        if !MODELS.iter().any(|(id, _)| *id == model) {
+            options.push((model.clone(), model.as_str()));
+        }
+        let options: Vec<(String, String)> = options.into_iter().map(|(id, l)| (id, l.to_string())).collect();
+        let pairs: Vec<(String, &str)> = options.iter().map(|(id, l)| (id.clone(), l.as_str())).collect();
+        if crate::widgets::dropdown_literal(ui, "prefs-ai-model", &mut model, &pairs, 260.0) {
+            obj.insert("model".into(), json!(model));
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(tl!("Output Size"));
+        let mut size = obj.get("imageSize").and_then(Value::as_str).unwrap_or("auto").to_string();
+        let options: Vec<(String, &str)> = SIZES.iter().map(|(id, label)| (id.to_string(), *label)).collect();
+        if crate::widgets::dropdown_literal(ui, "prefs-ai-size", &mut size, &options, 90.0) {
+            obj.insert("imageSize".into(), json!(size));
+        }
+    });
+    let show_id = ui.id().with("prefs-ai-show-key");
+    let mut show = ui.ctx().data(|m| m.get_temp::<bool>(show_id).unwrap_or(false));
+    ui.horizontal(|ui| {
+        ui.label(tl!("API Key"));
+        let mut key = obj.get("apiKey").and_then(Value::as_str).unwrap_or_default().to_string();
+        let edit = egui::TextEdit::singleline(&mut key).password(!show).desired_width(260.0).hint_text(tl!("Paste your Gemini API key"));
+        if ui.add(edit).changed() {
+            obj.insert("apiKey".into(), json!(key.trim()));
+        }
+        if ui.checkbox(&mut show, tl!("Show")).changed() {
+            ui.ctx().data_mut(|m| m.insert_temp(show_id, show));
+        }
+    });
+    let t = crate::theme::Tokens::get(ui.ctx());
+    ui.label(egui::RichText::new(tl!("Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.")).color(t.text_faint));
 }
 
 #[cfg(test)]
@@ -134,10 +202,15 @@ mod tests {
         assert!(owns(&f));
         assert_eq!(f["prompt"], "");
         assert_eq!(f["model"], MODELS[0].0);
-        app.session.prefs.edit(|p| p.dialogs.insert(COMMAND.into(), json!({"model": "gemini-3-pro-image", "imageSize": "8K", "prompt": "old"})));
+        app.session.prefs.edit(|p| {
+            p.dialogs.insert(COMMAND.into(), json!({"feather": 6.0, "prompt": "old"}));
+            p.ai.model = "gemini-3-pro-image".into();
+            p.ai.image_size = "8K".into();
+        });
         let f = fields(&app);
-        assert_eq!(f["model"], "gemini-3-pro-image");
-        assert_eq!(f["imageSize"], "auto", "an invalid remembered size falls back");
+        assert_eq!(f["model"], "gemini-3-pro-image", "the model comes from Preferences");
+        assert_eq!(f["imageSize"], "auto", "an invalid saved size falls back");
+        assert_eq!(f["feather"], 6.0);
         assert_eq!(f["prompt"], "", "the prompt is never restored");
     }
 

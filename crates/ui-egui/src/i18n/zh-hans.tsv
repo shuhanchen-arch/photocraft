@@ -159,13 +159,19 @@
 	Stroke…	描边…
 	Content-Aware Fill…	内容识别填充…
 	Generative Fill…	创成式填充…
+	AI Generation	AI 生成
+	API Key	API 密钥
+	Output Size	输出尺寸
+	Paste your Gemini API key	粘贴你的 Gemini API 密钥
+	No API key yet: add one in Edit › Preferences › AI Generation.	还没有 API 密钥：请在 编辑 › 首选项 › AI 生成 中填写。
+	The prompt is sent to Google Gemini.	提示词会发送给 Google Gemini。
+	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	在 aistudio.google.com/apikey 申请密钥。密钥以明文保存在本机的 PhotoCraft 首选项文件里，只会发送给 Google。留空则使用环境变量 GEMINI_API_KEY。
 	Prompt:	提示词：
 	Model:	模型：
 	Output Size:	输出尺寸：
 	Feather:	羽化：
 	Describe what to generate in the selection.	请描述要在选区中生成的内容。
 	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	描述要在选区里生成的内容，例如“沙滩上的一把红伞”
-	The prompt is sent to Google Gemini. The API key is read from the GEMINI_API_KEY environment variable.	提示词会发送给 Google Gemini。API key 从环境变量 GEMINI_API_KEY 读取。
 	Delete and Fill Selection	删除并填充选区
 	Content-Aware Scale	内容识别缩放
 	Puppet Warp	操控变形

@@ -876,6 +876,32 @@ impl Default for Integrations {
     }
 }
 
+/// Edit › Preferences › AI Generation: Edit › Generative Fill's Gemini settings.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Ai {
+    /// The Gemini image model (`photocraft_genai::DEFAULT_MODEL` by default).
+    pub model: String,
+    /// The Google Gemini API key. Kept in the preferences file as plain text; empty falls back
+    /// to the `GEMINI_API_KEY` environment variable. Never journalled or shown in debug output.
+    pub api_key: String,
+    /// The output size: `auto` (from the selection), `1K`, `2K` or `4K`.
+    pub image_size: String,
+}
+
+impl Default for Ai {
+    fn default() -> Self {
+        Self { model: photocraft_genai::DEFAULT_MODEL.into(), api_key: String::new(), image_size: "auto".into() }
+    }
+}
+
+impl std::fmt::Debug for Ai {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let key = if self.api_key.is_empty() { "" } else { "<redacted>" };
+        f.debug_struct("Ai").field("model", &self.model).field("api_key", &key).field("image_size", &self.image_size).finish()
+    }
+}
+
 /// Edit › Menus: hidden items and item colours, by command id.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -930,6 +956,7 @@ pub struct Preferences {
     pub enhanced_controls: EnhancedControls,
     pub raw_defaults: RawDefaults,
     pub integrations: Integrations,
+    pub ai: Ai,
     /// Edit › Keyboard Shortcuts: command id → shortcut (`Cmd+Shift+N` notation); an empty
     /// string removes the default shortcut.
     pub shortcuts: BTreeMap<String, String>,
@@ -981,7 +1008,7 @@ pub struct Preferences {
 }
 
 /// Preferences dialog sections in Photoshop's order: (id, title).
-pub const SECTIONS: [(&str, &str); 18] = [
+pub const SECTIONS: [(&str, &str); 19] = [
     ("general", "General"),
     ("interface", "Interface"),
     ("workspace", "Workspace"),
@@ -1000,6 +1027,7 @@ pub const SECTIONS: [(&str, &str); 18] = [
     ("enhancedControls", "Enhanced Controls"),
     ("rawDefaults", "Camera Raw Defaults"),
     ("integrations", "Integrations"),
+    ("ai", "AI Generation"),
 ];
 
 /// Preferences that nothing reads yet, so Edit › Preferences doesn't show them: a control that

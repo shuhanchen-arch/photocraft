@@ -55,7 +55,7 @@ pub const IMAGE_SIZES: [&str; 3] = ["1K", "2K", "4K"];
 /// Why a generation failed.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
-    #[error("no Gemini API key: set the {API_KEY_ENV} environment variable and restart PhotoCraft")]
+    #[error("no Gemini API key: enter one in Edit › Preferences › AI Generation (or set the {API_KEY_ENV} environment variable)")]
     NoApiKey,
     #[error("{0}")]
     BadRequest(String),

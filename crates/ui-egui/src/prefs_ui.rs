@@ -1056,6 +1056,9 @@ fn humanize(key: &str) -> String {
         "exrAcesCg" => return "Open color-less EXR as ACEScg".into(),
         "darkTheme" => return "Dark Theme".into(),
         "lightTheme" => return "Light Theme".into(),
+        // Preferences › AI Generation.
+        "apiKey" => return "API Key".into(),
+        "imageSize" => return "Output Size".into(),
         _ => {}
     }
     // These controls appear only for WebP, so reuse the existing translated labels.
@@ -1227,7 +1230,11 @@ fn prefs_body(ui: &mut egui::Ui, f: &mut Map<String, Value>, system: Option<egui
                     ui.add_space(4.0);
                     ui.label(RichText::new(tl!("These settings aren't available in PhotoCraft yet.")).color(t.text_faint));
                 } else if let Some(obj) = values.get_mut(&section).and_then(Value::as_object_mut) {
-                    section_fields(ui, &section, obj, &order, lang, system, filter);
+                    if section == "ai" {
+                        crate::genfill_ui::prefs_rows(ui, obj);
+                    } else {
+                        section_fields(ui, &section, obj, &order, lang, system, filter);
+                    }
                     if section == "fileHandling" {
                         ui.label(
                             RichText::new(tl!("0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized."))
