@@ -1,0 +1,22 @@
+[package]
+name = "photocraft-genai"
+description = "Client for Google's Gemini image-generation API (Generative Fill): request building, response parsing, HTTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+base64 = "0.22"
+
+# HTTPS on native only: the web build has no network client here (generation returns an
+# "unsupported" error there). ureq is blocking, which suits the engine's worker-thread jobs;
+# rustls (no OpenSSL) with the bundled webpki roots, and the standard proxy environment variables
+# (HTTPS_PROXY / ALL_PROXY, including socks5://) are honoured.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls", "socks-proxy"] }

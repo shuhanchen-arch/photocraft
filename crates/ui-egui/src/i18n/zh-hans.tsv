@@ -158,6 +158,14 @@
 	Fill…	填充…
 	Stroke…	描边…
 	Content-Aware Fill…	内容识别填充…
+	Generative Fill…	创成式填充…
+	Prompt:	提示词：
+	Model:	模型：
+	Output Size:	输出尺寸：
+	Feather:	羽化：
+	Describe what to generate in the selection.	请描述要在选区中生成的内容。
+	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	描述要在选区里生成的内容，例如“沙滩上的一把红伞”
+	The prompt is sent to Google Gemini. The API key is read from the GEMINI_API_KEY environment variable.	提示词会发送给 Google Gemini。API key 从环境变量 GEMINI_API_KEY 读取。
 	Delete and Fill Selection	删除并填充选区
 	Content-Aware Scale	内容识别缩放
 	Puppet Warp	操控变形

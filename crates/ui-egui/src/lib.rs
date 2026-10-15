@@ -89,6 +89,7 @@ pub mod file_dialog;
 pub mod file_open;
 pub mod file_ui;
 pub mod fill_ui;
+pub mod genfill_ui;
 pub mod filter_dialog;
 mod filter_preview_ui;
 #[cfg(not(target_arch = "wasm32"))]
