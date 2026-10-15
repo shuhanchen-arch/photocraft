@@ -1,6 +1,6 @@
 # 框选生成（Gemini Generative Fill）设计
 
-状态（2026-10-15）：第 1、2 步已实现。第 1 步：`crates/genai`、`edit.generativeFill`、Edit › Generative Fill… 对话框；首次真实调用发现模型只接受 `response_format.mime_type: image/jpeg`，已改。第 2 步（默认开启，参数 `context`，偏好设置 `ai.useSurroundingImage`，对话框复选框"参考周围画面"）：上下文窗口 + 宽高比对齐（`context_window`）、8 位 sRGB PNG 原图 + 洋红标记图、提示词模板（空提示词 = 移除）、精确缩放回窗口、蒙版扩 4px 羽化 4px。窗口找不到能放进画布的受支持比例时（比如选区铺满一张 7:5 的画布），用最接近的比例，贴回时轻微拉伸。第 3–4 步未开始。分支 `feature/gemini-image`。
+状态（2026-10-15）：第 1、2 步已实现。第 1 步：`crates/genai`、`edit.generativeFill`、Edit › Generative Fill… 对话框；首次真实调用发现模型只接受 `response_format.mime_type: image/jpeg`，已改。第 2 步（默认开启，参数 `context`，偏好设置 `ai.useSurroundingImage`，对话框复选框"参考周围画面"）：上下文窗口 + 宽高比对齐（`context_window`）、8 位 sRGB PNG 原图 + 洋红标记图、提示词模板（空提示词 = 移除）、精确缩放回窗口、从 sRGB 转回文档配置文件、对齐校正（3.4 第 5 条，`genai_align.rs`：在蒙版羽化边缘外 32px 环带上先粗后细搜索平移，最多窗口长边的 2%、不超过 24px，结果写进返回值 `alignment`）、蒙版扩 4px 羽化 4px。窗口找不到能放进画布的受支持比例时（比如选区铺满一张 7:5 的画布），用最接近的比例，贴回时轻微拉伸。第 3–4 步未开始。分支 `feature/gemini-image`。
 
 ## 1. 用户流程
 

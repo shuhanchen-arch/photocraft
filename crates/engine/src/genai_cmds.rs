@@ -10,7 +10,9 @@
 //!   ([`context_images`]), with a prompt asking to change only the marked region
 //!   ([`context_prompt`]). The reply is scaled back to the window's exact size and masked by the
 //!   selection grown by `expand` px and feathered by `feather` px, so nothing outside the
-//!   selection changes. An empty prompt asks to remove what is selected.
+//!   selection changes. The models redraw the whole picture and often shift it a few pixels, so
+//!   the reply is first lined up with the original on a ring outside the selection
+//!   ([`crate::genai_align`]). An empty prompt asks to remove what is selected.
 //! * **Text only** (`context: false`): the prompt alone, with the aspect ratio closest to the
 //!   selection's bounds; the reply is scaled to cover those bounds.
 //!
@@ -55,6 +57,12 @@ const MAX_EXPAND: f64 = 100.0;
 const MARK: [f32; 3] = [1.0, 0.0, 1.0];
 const MARK_OPACITY: f32 = 0.5;
 const MARK_OUTLINE: f32 = 2.0;
+/// Width (px) of the ring outside the mask's soft edge that the alignment compares.
+const ALIGN_BAND: f32 = 32.0;
+/// Largest alignment shift: this fraction of the window's long side, within the bounds below.
+const ALIGN_SHIFT_FRACTION: f32 = 0.02;
+const ALIGN_SHIFT_MIN: f32 = 4.0;
+const ALIGN_SHIFT_MAX: f32 = 24.0;
 
 fn bad(msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: ID.into(), msg: msg.into() }
@@ -296,10 +304,19 @@ fn png(rgb: &[f32], w: usize, h: usize) -> Result<Vec<u8>> {
     photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &photocraft_codecs::EncodeOptions::default()).map_err(err)
 }
 
+/// What [`context_images`] produces: the two PNGs sent, and the window's luminance and selection
+/// coverage at full size, for lining the reply up afterwards.
+struct ContextImages {
+    photo: Vec<u8>,
+    marked: Vec<u8>,
+    luma: Vec<f32>,
+    cover: Vec<f32>,
+}
+
 /// The two images sent with the surrounding image: the visible composite of `window` over white,
 /// converted to 8-bit sRGB, and the same with `sel` marked ([`mark`]); both PNG, shrunk to at
 /// most `max_side` px on the long side.
-fn context_images(doc: &Document, sel: &Surface, window: Rect, max_side: usize) -> Result<(Vec<u8>, Vec<u8>)> {
+fn context_images(doc: &Document, sel: &Surface, window: Rect, max_side: usize) -> Result<ContextImages> {
     let (w, h) = (window.width() as usize, window.height() as usize);
     let too_large = || EngineError::Other("the area around the selection is too large to send: select a smaller area".into());
     let n = w.checked_mul(h).filter(|n| *n > 0 && *n as u64 <= MAX_CONTEXT_AREA).ok_or_else(too_large)?;
@@ -320,8 +337,45 @@ fn context_images(doc: &Document, sel: &Surface, window: Rect, max_side: usize) 
     }
     let marked = mark(&rgb, &cover, w, h);
     let (photo, pw, ph) = downscale(&rgb, w, h, max_side);
+    let photo = png(&photo, pw, ph)?;
     let (marked, mw, mh) = downscale(&marked, w, h, max_side);
-    Ok((png(&photo, pw, ph)?, png(&marked, mw, mh)?))
+    let marked = png(&marked, mw, mh)?;
+    Ok(ContextImages { photo, marked, luma: crate::genai_align::luma(&rgb), cover })
+}
+
+/// How far to move the reply so it lines up with the original window around the selection
+/// ([`crate::genai_align::estimate`]); no offset when the reply can't be read or nothing clearly
+/// better is found. The reply is compared as sRGB, as it was sent.
+fn align_reply(generated: &photocraft_genai::Generated, reference: &ContextImages, window: Rect, expand: f32, feather: f32) -> crate::genai_align::Alignment {
+    let Ok(imported) = photocraft_io::import(&format!("generated.{}", reply_ext(&generated.mime_type)), &generated.bytes) else { return Default::default() };
+    let src = imported.document;
+    let buf = photocraft_compose::render(&src, src.bounds()).over_background([1.0; 3]);
+    let rgb: Vec<f32> = buf.px.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let (w, h) = (window.width() as usize, window.height() as usize);
+    let max_shift = (w.max(h) as f32 * ALIGN_SHIFT_FRACTION).clamp(ALIGN_SHIFT_MIN, ALIGN_SHIFT_MAX);
+    // Compare beyond where the mask fades out (the feather is a Gaussian sigma: 2σ is nearly gone).
+    let gap = expand + 2.0 * feather + 2.0;
+    let size = (src.size.width as usize, src.size.height as usize);
+    let reach = crate::genai_align::Reach { gap, band: ALIGN_BAND, max_shift };
+    crate::genai_align::estimate(&reference.luma, &reference.cover, (w, h), &crate::genai_align::luma(&rgb), size, reach)
+}
+
+/// The file extension `photocraft_io::import` should see for a reply of `mime`.
+fn reply_ext(mime: &str) -> &'static str {
+    match mime {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "png",
+    }
+}
+
+/// `(dx, dy)` limited so the window moved by it still covers `need` (the mask's bounds): the
+/// shifted reply must leave no gap under the mask.
+fn clamp_shift((dx, dy): (i32, i32), window: Rect, need: Rect) -> (i32, i32) {
+    if need.is_empty() || !window.contains_rect(&need) {
+        return (0, 0);
+    }
+    (dx.clamp(need.x1 - window.x1, need.x0 - window.x0), dy.clamp(need.y1 - window.y1, need.y0 - window.y0))
 }
 
 /// `sel` grown by `r` px (within `canvas`), for the layer mask; `sel` itself when `r` is 0 or the
@@ -446,36 +500,61 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
         true,
         move |ctx| {
             let mut request = request;
+            let mut reference = None;
             if let Fit::Exact(window) = fit {
                 ctx.progress(0.02, "Reading the area around the selection…");
-                let (photo, marked) = context_images(&doc, &sel, window, max_side)?;
+                let mut images = context_images(&doc, &sel, window, max_side)?;
                 let png = |bytes| photocraft_genai::InputImage { mime_type: "image/png".into(), bytes };
-                request.images = vec![png(photo), png(marked)];
+                request.images = vec![png(std::mem::take(&mut images.photo)), png(std::mem::take(&mut images.marked))];
+                reference = Some((window, images));
                 ctx.check()?;
             }
             ctx.progress(0.05, "Generating with Gemini…");
             let generated = photocraft_genai::generate(&request, &config).map_err(|e| EngineError::Other(e.to_string()))?;
             ctx.check()?;
-            ctx.progress(0.9, "Placing the result…");
+            ctx.progress(0.85, "Lining the result up…");
             let mask = expanded_mask(&sel, expand, canvas);
-            Ok((generated, mask))
+            let (shift, found) = match &reference {
+                Some((window, images)) => {
+                    let a = align_reply(&generated, images, *window, expand, feather);
+                    (clamp_shift((a.dx, a.dy), *window, mask.content_bounds().intersect(&canvas)), Some(a))
+                }
+                None => ((0, 0), None),
+            };
+            ctx.check()?;
+            ctx.progress(0.95, "Placing the result…");
+            Ok((generated, mask, shift, found))
         },
-        move |s, (generated, mask)| place(s, generated, mask, fit, &name, feather, info),
+        move |s, (generated, mask, shift, found)| {
+            let mut info = info;
+            if let (Some(o), Some(a)) = (info.as_object_mut(), found) {
+                o.insert(
+                    "alignment".into(),
+                    json!({"shift": [shift.0, shift.1], "found": [a.dx, a.dy], "error": a.error, "errorUnshifted": a.error_unshifted}),
+                );
+            }
+            place(s, generated, mask, fit, shift, &name, feather, info)
+        },
     )
 }
 
-/// Decode the generated image, scale it per `fit`, and add it above the active layer with `mask`
-/// as its layer mask, as one undo step.
-fn place(s: &mut Session, generated: photocraft_genai::Generated, mask: Surface, fit: Fit, name: &str, feather: f32, info: Value) -> Result<Value> {
+/// Decode the generated image, scale it per `fit`, move it by `shift` (the alignment), and add it
+/// above the active layer with `mask` as its layer mask, as one undo step.
+#[allow(clippy::too_many_arguments)]
+fn place(
+    s: &mut Session,
+    generated: photocraft_genai::Generated,
+    mask: Surface,
+    fit: Fit,
+    shift: (i32, i32),
+    name: &str,
+    feather: f32,
+    info: Value,
+) -> Result<Value> {
     let target = &s.active().ok_or(EngineError::NoDocument)?.doc;
     let fmt = target.pixel_format();
     let dst_profile = crate::color_cmds::document_profile(target);
-    let ext = match generated.mime_type.as_str() {
-        "image/jpeg" => "jpg",
-        "image/webp" => "webp",
-        _ => "png",
-    };
-    let imported = photocraft_io::import(&format!("generated.{ext}"), &generated.bytes)
+    let imported = photocraft_io::import(&format!("generated.{}", reply_ext(&generated.mime_type)), &generated.bytes)
         .map_err(|e| EngineError::Other(format!("could not read the generated image: {e}")))?;
     let mut src = imported.document;
     to_document_colors(&mut src, &dst_profile, fmt.mode)?;
@@ -484,7 +563,7 @@ fn place(s: &mut Session, generated: photocraft_genai::Generated, mask: Surface,
     let px = crate::file_cmds::flattened(&src, fmt);
     // Edges repeat outwards while scaling, so the result stays opaque up to its border.
     let px = if (sx - 1.0).abs() > 1e-9 || (sy - 1.0).abs() > 1e-9 { resize_surface_in_canvas(&px, sx, sy, Resample::Bicubic, src.bounds()) } else { px };
-    let px = translate_surface(&px, dx, dy);
+    let px = translate_surface(&px, dx.saturating_add(shift.0), dy.saturating_add(shift.1));
     let mask = LayerMask { surface: mask, feather, ..LayerMask::reveal_all() };
     let layer_name = name.to_string();
     let id = s.edit(LABEL, |doc, active| {
@@ -735,7 +814,8 @@ mod tests {
         let st = s.active().unwrap();
         let sel = st.doc.selection.clone().unwrap();
         let window = Rect::new(0, 0, 60, 40);
-        let (photo, marked) = context_images(&st.doc, &sel, window, 1024).unwrap();
+        let ContextImages { photo, marked, luma, cover } = context_images(&st.doc, &sel, window, 1024).unwrap();
+        assert_eq!((luma.len(), cover.len()), (60 * 40, 60 * 40), "kept at full size for the alignment");
         let size = |png: &[u8]| {
             let i = photocraft_codecs::decode(png).unwrap();
             (i.width(), i.height())
@@ -744,7 +824,7 @@ mod tests {
         assert_eq!(size(&marked), (60, 40));
         assert_ne!(photo, marked, "the selection is marked in the second image");
         // Shrunk to the output size's long side.
-        let (small, _) = context_images(&st.doc, &sel, window, 30).unwrap();
+        let small = context_images(&st.doc, &sel, window, 30).unwrap().photo;
         assert_eq!(size(&small), (30, 20));
         // Absurd windows are refused before anything is read.
         assert!(context_images(&st.doc, &sel, Rect::new(0, 0, 100_000, 100_000), 1024).is_err());
@@ -777,7 +857,7 @@ mod tests {
         let sel = s.active().unwrap().doc.selection.clone().unwrap();
         let target = Rect::new(8, 8, 40, 24);
         let generated = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: png_file(64, 32), text: Some("ok".into()) };
-        let out = place(&mut s, generated, sel.clone(), Fit::Cover(target), "Generative Fill: test", 2.0, json!({"model": "m"})).unwrap();
+        let out = place(&mut s, generated, sel.clone(), Fit::Cover(target), (0, 0), "Generative Fill: test", 2.0, json!({"model": "m"})).unwrap();
         let st = s.active().unwrap();
         assert_eq!(st.doc.layers.len(), before + 1);
         let id = st.active_layer.unwrap();
@@ -808,7 +888,7 @@ mod tests {
         let mask = expanded_mask(&sel, CONTEXT_EXPAND, canvas);
         // The model answers at its own resolution (here 3× the window, a rounded ratio).
         let generated = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: png_file(window.width() * 3, window.height() * 3 + 1), text: None };
-        let out = place(&mut s, generated, mask, Fit::Exact(window), "Generative Fill", CONTEXT_FEATHER, json!({"aspectRatio": ratio})).unwrap();
+        let out = place(&mut s, generated, mask, Fit::Exact(window), (0, 0), "Generative Fill", CONTEXT_FEATHER, json!({"aspectRatio": ratio})).unwrap();
         assert_eq!(out["bounds"], json!([window.x0, window.y0, window.x1, window.y1]));
         let st = s.active().unwrap();
         let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
@@ -830,7 +910,7 @@ mod tests {
         assert!(crate::color_cmds::document_profile(&st.doc).description.contains("P3"), "the document is P3");
         let sel = st.doc.selection.clone().unwrap();
         let red = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: png_file(32, 16), text: None };
-        place(&mut s, red, sel, Fit::Exact(Rect::new(8, 8, 40, 24)), "x", 0.0, json!({})).unwrap();
+        place(&mut s, red, sel, Fit::Exact(Rect::new(8, 8, 40, 24)), (0, 0), "x", 0.0, json!({})).unwrap();
         let st = s.active().unwrap();
         let LayerContent::Raster(px) = &st.doc.layer(st.active_layer.unwrap()).unwrap().content else { panic!("a pixel layer") };
         let c = px.read_region(Rect::new(20, 12, 21, 13));
@@ -839,11 +919,68 @@ mod tests {
         let mut s = session_with_selection();
         let sel = s.active().unwrap().doc.selection.clone().unwrap();
         let red = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: png_file(32, 16), text: None };
-        place(&mut s, red, sel, Fit::Exact(Rect::new(8, 8, 40, 24)), "x", 0.0, json!({})).unwrap();
+        place(&mut s, red, sel, Fit::Exact(Rect::new(8, 8, 40, 24)), (0, 0), "x", 0.0, json!({})).unwrap();
         let st = s.active().unwrap();
         let LayerContent::Raster(px) = &st.doc.layer(st.active_layer.unwrap()).unwrap().content else { panic!("a pixel layer") };
         let c = px.read_region(Rect::new(20, 12, 21, 13));
         assert!(c[0] > 0.99 && c[1] < 0.01 && c[2] < 0.01, "{c:?}");
+    }
+
+    #[test]
+    fn shifts_never_uncover_the_mask() {
+        let window = Rect::new(0, 0, 200, 100);
+        let need = Rect::new(10, 20, 150, 90);
+        assert_eq!(clamp_shift((5, -3), window, need), (5, -3));
+        // Moving the window 15 px right would leave x 0..15 bare under a mask starting at 10.
+        assert_eq!(clamp_shift((15, 0), window, need), (10, 0));
+        assert_eq!(clamp_shift((-80, -30), window, need), (-50, -10));
+        assert_eq!(clamp_shift((3, 3), window, Rect::new(0, 0, 0, 0)), (0, 0));
+        assert_eq!(clamp_shift((3, 3), window, Rect::new(-5, 0, 10, 10)), (0, 0));
+    }
+
+    /// An 8-bit RGB texture value at (x, y): waves plus hashed noise, different at every offset.
+    fn texel(x: i32, y: i32) -> [u8; 3] {
+        let n = (x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663)) as u32;
+        let noise = (n.wrapping_mul(2_654_435_761) >> 24) as f32 / 255.0;
+        let v = 0.5 + 0.2 * (x as f32 * 0.21).sin() * (y as f32 * 0.13).cos() + 0.2 * (noise - 0.5);
+        let g = (v.clamp(0.0, 1.0) * 255.0) as u8;
+        [g, g.saturating_add(20), g / 2]
+    }
+
+    fn texture_png(x0: i32, y0: i32, w: u32, h: u32) -> Vec<u8> {
+        let px: Vec<u8> = (0..h as i32).flat_map(|y| (0..w as i32).flat_map(move |x| texel(x0 + x, y0 + y))).collect();
+        let image = photocraft_codecs::Image::from_u8(w, h, photocraft_codecs::ChannelLayout::Rgb, px).unwrap();
+        photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap()
+    }
+
+    #[test]
+    fn a_shifted_reply_is_lined_up_before_it_is_placed() {
+        let mut s = Session::new();
+        let doc = photocraft_io::import("t.png", &texture_png(0, 0, 240, 160)).unwrap().document;
+        s.add_document(doc, None);
+        s.execute("select.rect", json!({"x": 90, "y": 60, "width": 60, "height": 40})).unwrap();
+        let st = s.active().unwrap();
+        let (doc, sel) = (st.doc.clone(), st.doc.selection.clone().unwrap());
+        let (window, _) = context_window(sel.content_bounds(), doc.bounds()).unwrap();
+        let reference = context_images(&doc, &sel, window, 4096).unwrap();
+        // The "model" draws the window 4 px left and 2 px up of where it belongs.
+        let bytes = texture_png(window.x0 + 4, window.y0 + 2, window.width(), window.height());
+        let generated = photocraft_genai::Generated { mime_type: "image/png".into(), bytes, text: None };
+        let a = align_reply(&generated, &reference, window, CONTEXT_EXPAND, CONTEXT_FEATHER);
+        assert_eq!((a.dx, a.dy), (4, 2), "{a:?}");
+        // A reply that is already in place stays there.
+        let bytes = texture_png(window.x0, window.y0, window.width(), window.height());
+        let generated = photocraft_genai::Generated { mime_type: "image/png".into(), bytes, text: None };
+        let a = align_reply(&generated, &reference, window, CONTEXT_EXPAND, CONTEXT_FEATHER);
+        assert_eq!((a.dx, a.dy), (0, 0), "{a:?}");
+        // Placing with the shift moves the layer's pixels by it.
+        let generated = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: png_file(window.width(), window.height()), text: None };
+        let out = place(&mut s, generated, sel, Fit::Exact(window), (4, 2), "x", 0.0, json!({})).unwrap();
+        assert_eq!(out["bounds"], json!([window.x0, window.y0, window.x1, window.y1]));
+        let st = s.active().unwrap();
+        let LayerContent::Raster(px) = &st.doc.layer(st.active_layer.unwrap()).unwrap().content else { panic!("a pixel layer") };
+        assert_eq!(px.content_bounds().x0, window.x0 + 4);
+        assert_eq!(px.content_bounds().y0, window.y0 + 2);
     }
 
     #[test]
@@ -857,7 +994,7 @@ mod tests {
         let mut s = session_with_selection();
         let sel = s.active().unwrap().doc.selection.clone().unwrap();
         let generated = photocraft_genai::Generated { mime_type: photocraft_genai::OUTPUT_MIME.into(), bytes: jpeg, text: None };
-        let out = place(&mut s, generated, sel, Fit::Cover(Rect::new(8, 8, 40, 24)), "Generative Fill: jpeg", 0.0, json!({})).unwrap();
+        let out = place(&mut s, generated, sel, Fit::Cover(Rect::new(8, 8, 40, 24)), (0, 0), "Generative Fill: jpeg", 0.0, json!({})).unwrap();
         assert_eq!(out["generatedSize"], json!([48, 24]));
     }
 
@@ -867,7 +1004,7 @@ mod tests {
         let before = s.active().unwrap().doc.layers.len();
         let sel = s.active().unwrap().doc.selection.clone().unwrap();
         let junk = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: b"not an image".to_vec(), text: None };
-        assert!(place(&mut s, junk, sel, Fit::Cover(Rect::new(8, 8, 40, 24)), "x", 0.0, json!({})).is_err());
+        assert!(place(&mut s, junk, sel, Fit::Cover(Rect::new(8, 8, 40, 24)), (0, 0), "x", 0.0, json!({})).is_err());
         assert_eq!(s.active().unwrap().doc.layers.len(), before);
     }
 }
