@@ -72,6 +72,9 @@
 	No API key yet: add one in Edit › Preferences › AI Generation.	Chưa có khóa API: hãy thêm trong Chỉnh sửa › Tùy chọn › Tạo bằng AI.
 	Paste your Gemini API key	Dán khóa API Gemini của bạn
 	The prompt is sent to Google Gemini.	Câu lệnh được gửi tới Google Gemini.
+	Use Surrounding Image	Dùng ảnh xung quanh
+	Send the area around the selection so the result matches it. Leave the prompt empty to remove what is selected.	Gửi cả vùng xung quanh vùng chọn để kết quả hài hòa. Để trống lời nhắc để xóa nội dung đã chọn.
+	The prompt and the area around the selection are sent to Google Gemini.	Lời nhắc và vùng xung quanh vùng chọn được gửi đến Google Gemini.
 	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	Lấy khóa tại aistudio.google.com/apikey. Khóa được lưu dưới dạng văn bản thường trong tệp tùy chọn của PhotoCraft trên máy này và chỉ được gửi tới Google. Để trống để dùng biến môi trường GEMINI_API_KEY.
 	AI Generation	Tạo bằng AI
 	API Key	Khóa API

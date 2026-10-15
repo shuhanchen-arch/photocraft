@@ -1059,6 +1059,7 @@ fn humanize(key: &str) -> String {
         // Preferences › AI Generation.
         "apiKey" => return "API Key".into(),
         "imageSize" => return "Output Size".into(),
+        "useSurroundingImage" => return "Use Surrounding Image".into(),
         _ => {}
     }
     // These controls appear only for WebP, so reuse the existing translated labels.

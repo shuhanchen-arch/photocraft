@@ -165,6 +165,9 @@
 	No API key yet: add one in Edit › Preferences › AI Generation.	Nessuna chiave API: aggiungila in Modifica › Preferenze › Generazione IA.
 	Paste your Gemini API key	Incolla la tua chiave API Gemini
 	The prompt is sent to Google Gemini.	Il prompt viene inviato a Google Gemini.
+	Use Surrounding Image	Usa immagine circostante
+	Send the area around the selection so the result matches it. Leave the prompt empty to remove what is selected.	Invia l’area intorno alla selezione perché il risultato si armonizzi. Lascia vuoto il prompt per rimuovere il contenuto selezionato.
+	The prompt and the area around the selection are sent to Google Gemini.	Il prompt e l’area intorno alla selezione vengono inviati a Google Gemini.
 	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	Ottieni una chiave su aistudio.google.com/apikey. Viene salvata in chiaro nel file delle preferenze di PhotoCraft su questo computer e inviata solo a Google. Lascia vuoto per usare la variabile d’ambiente GEMINI_API_KEY.
 	AI Generation	Generazione IA
 	API Key	Chiave API

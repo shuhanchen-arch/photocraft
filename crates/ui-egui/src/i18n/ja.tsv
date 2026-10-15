@@ -167,6 +167,9 @@
 	No API key yet: add one in Edit › Preferences › AI Generation.	API キーが未設定です：編集 › 環境設定 › AI 生成 で追加してください。
 	Paste your Gemini API key	Gemini API キーを貼り付け
 	The prompt is sent to Google Gemini.	プロンプトは Google Gemini に送信されます。
+	Use Surrounding Image	周囲の画像を参照
+	Send the area around the selection so the result matches it. Leave the prompt empty to remove what is selected.	選択範囲の周囲も送信し、結果が周囲となじむようにします。プロンプトを空にすると選択範囲の内容を削除します。
+	The prompt and the area around the selection are sent to Google Gemini.	プロンプトと選択範囲の周囲の画像が Google Gemini に送信されます。
 	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	キーは aistudio.google.com/apikey で取得できます。このコンピューターの PhotoCraft 環境設定ファイルに平文で保存され、Google にのみ送信されます。空欄の場合は環境変数 GEMINI_API_KEY を使用します。
 	AI Generation	AI 生成
 	API Key	API キー

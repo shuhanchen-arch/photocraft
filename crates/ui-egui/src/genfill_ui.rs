@@ -1,8 +1,9 @@
 //! Edit › Generative Fill…: the prompt dialog in front of `edit.generativeFill` (Gemini image
 //! generation into the selection). The fields are the command's params, so `ui.dialog.set` /
-//! `ui.dialog.confirm` drive it like any dialog. The model and size start from Edit › Preferences ›
-//! AI Generation and OK saves them back there; the feather is remembered in
-//! `dialogs["edit.generativeFill"]`. The prompt is never remembered. [`prefs_rows`] draws the
+//! `ui.dialog.confirm` drive it like any dialog. The model, size and Use Surrounding Image start
+//! from Edit › Preferences › AI Generation and OK saves them back there; the feather is remembered
+//! in `dialogs["edit.generativeFill"]`. The prompt is never remembered; it may be empty with Use
+//! Surrounding Image (remove what is selected). [`prefs_rows`] draws the
 //! AI Generation page of Preferences (model, size and the masked API key field).
 
 use serde_json::{Map, Value, json};
@@ -12,7 +13,7 @@ use crate::PhotocraftApp;
 pub const COMMAND: &str = photocraft_engine::genai_cmds::ID;
 const MARK: &str = "__generativeFill";
 /// Params sent to the engine.
-const KEYS: [&str; 4] = ["prompt", "model", "imageSize", "feather"];
+const KEYS: [&str; 5] = ["prompt", "context", "model", "imageSize", "feather"];
 /// Params remembered in `dialogs[COMMAND]` (model and size live in `prefs.ai`).
 const REMEMBERED: [&str; 1] = ["feather"];
 /// The models offered in the dialog and Preferences (any other name can be passed through the
@@ -34,6 +35,7 @@ fn valid(key: &str, v: &Value) -> bool {
         "model" => v.as_str().is_some_and(|m| MODELS.iter().any(|(id, _)| *id == m)),
         "imageSize" => v.as_str().is_some_and(|s| SIZES.iter().any(|(id, _)| *id == s)),
         "feather" => v.as_f64().is_some_and(|f| f.is_finite() && (0.0..=250.0).contains(&f)),
+        "context" => v.is_boolean(),
         _ => false,
     }
 }
@@ -50,7 +52,9 @@ pub fn fields(app: &PhotocraftApp) -> Map<String, Value> {
     let size = if valid("imageSize", &json!(ai.image_size)) { ai.image_size.clone() } else { "auto".to_string() };
     f.insert("model".into(), json!(model));
     f.insert("imageSize".into(), json!(size));
-    f.insert("feather".into(), json!(0.0));
+    f.insert("context".into(), json!(ai.use_surrounding_image));
+    // The command's own default with the surrounding image: it hides the seam.
+    f.insert("feather".into(), json!(if ai.use_surrounding_image { 4.0 } else { 0.0 }));
     f.insert("__hasKey".into(), json!(has_key(app)));
     if let Some(Value::Object(saved)) = app.session.prefs().dialogs.get(COMMAND) {
         for key in REMEMBERED {
@@ -79,7 +83,8 @@ pub fn params(f: &Map<String, Value>) -> Value {
 
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
     let p = params(f);
-    if p.get("prompt").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty()) {
+    let context = p.get("context").and_then(Value::as_bool).unwrap_or(false);
+    if !context && p.get("prompt").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty()) {
         return Err(tl!("Describe what to generate in the selection.").into());
     }
     let result = app.run(COMMAND, p);
@@ -88,6 +93,7 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
         let model = f.get("model").filter(|v| valid("model", v)).and_then(Value::as_str).map(str::to_string);
         let size = f.get("imageSize").filter(|v| valid("imageSize", v)).and_then(Value::as_str).map(str::to_string);
         app.session.prefs.edit(|prefs| {
+            prefs.ai.use_surrounding_image = context;
             prefs.dialogs.insert(COMMAND.into(), Value::Object(remembered));
             if let Some(m) = model {
                 prefs.ai.model = m;
@@ -110,6 +116,14 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         .hint_text(tl!("Describe what to generate in the selection, e.g. “a red umbrella on the sand”"));
     if ui.add(edit).changed() {
         f.insert("prompt".into(), json!(prompt));
+    }
+    let mut context = f.get("context").and_then(Value::as_bool).unwrap_or(true);
+    if ui
+        .checkbox(&mut context, tl!("Use Surrounding Image"))
+        .on_hover_text(tl!("Send the area around the selection so the result matches it. Leave the prompt empty to remove what is selected."))
+        .changed()
+    {
+        f.insert("context".into(), json!(context));
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -138,7 +152,11 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     if f.get("__hasKey").and_then(Value::as_bool) == Some(false) {
         ui.colored_label(crate::theme::Tokens::get(ui.ctx()).warning, tl!("No API key yet: add one in Edit › Preferences › AI Generation."));
     }
-    ui.weak(tl!("The prompt is sent to Google Gemini."));
+    if context {
+        ui.weak(tl!("The prompt and the area around the selection are sent to Google Gemini."));
+    } else {
+        ui.weak(tl!("The prompt is sent to Google Gemini."));
+    }
 }
 
 /// Preferences › AI Generation: model, output size and the API key (masked unless Show is on).
@@ -167,6 +185,14 @@ pub fn prefs_rows(ui: &mut egui::Ui, obj: &mut Map<String, Value>) {
             obj.insert("imageSize".into(), json!(size));
         }
     });
+    let mut context = obj.get("useSurroundingImage").and_then(Value::as_bool).unwrap_or(true);
+    if ui
+        .checkbox(&mut context, tl!("Use Surrounding Image"))
+        .on_hover_text(tl!("Send the area around the selection so the result matches it. Leave the prompt empty to remove what is selected."))
+        .changed()
+    {
+        obj.insert("useSurroundingImage".into(), json!(context));
+    }
     let show_id = ui.id().with("prefs-ai-show-key");
     let mut show = ui.ctx().data(|m| m.get_temp::<bool>(show_id).unwrap_or(false));
     ui.horizontal(|ui| {
@@ -225,9 +251,23 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_prompt_is_refused_without_running() {
+    fn the_surrounding_image_starts_from_preferences() {
         let mut app = app();
         let f = fields(&app);
+        assert_eq!(f["context"], true, "on by default");
+        assert_eq!(f["feather"], 4.0);
+        assert_eq!(params(&f)["context"], true);
+        app.session.prefs.edit(|p| p.ai.use_surrounding_image = false);
+        let f = fields(&app);
+        assert_eq!((f["context"].clone(), f["feather"].clone()), (json!(false), json!(0.0)));
+        assert!(valid("context", &json!(true)) && !valid("context", &json!("yes")));
+    }
+
+    #[test]
+    fn an_empty_prompt_is_refused_without_running() {
+        let mut app = app();
+        let mut f = fields(&app);
+        f.insert("context".into(), json!(false));
         let layers = app.session.active().unwrap().doc.layers.len();
         assert!(confirm(&mut app, &f).is_err());
         assert_eq!(app.session.active().unwrap().doc.layers.len(), layers);

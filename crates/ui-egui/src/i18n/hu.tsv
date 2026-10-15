@@ -112,6 +112,9 @@
 	No API key yet: add one in Edit › Preferences › AI Generation.	Még nincs API-kulcs: adjon meg egyet a Szerkesztés › Beállítások › MI-generálás alatt.
 	Paste your Gemini API key	Illessze be a Gemini API-kulcsát
 	The prompt is sent to Google Gemini.	Az utasítás a Google Gemini szolgáltatásnak lesz elküldve.
+	Use Surrounding Image	Környező kép használata
+	Send the area around the selection so the result matches it. Leave the prompt empty to remove what is selected.	A kijelölés körüli területet is elküldi, hogy az eredmény illeszkedjen hozzá. Üres leírással a kijelölt tartalom eltávolítható.
+	The prompt and the area around the selection are sent to Google Gemini.	A leírás és a kijelölés körüli terület a Google Gemini-nek lesz elküldve.
 	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	Kulcsot az aistudio.google.com/apikey oldalon kaphat. Titkosítás nélkül, a PhotoCraft beállításfájljában tárolódik ezen a gépen, és csak a Google kapja meg. Hagyja üresen a GEMINI_API_KEY környezeti változó használatához.
 	AI Generation	MI-generálás
 	API Key	API-kulcs

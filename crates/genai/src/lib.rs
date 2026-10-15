@@ -254,9 +254,8 @@ pub fn parse_response(v: &Value) -> Result<Generated> {
             .filter(|m| !m.is_empty())
             .unwrap_or_else(|| "no reason given".into())
     };
-    match v.get("status").and_then(Value::as_str) {
-        Some("failed" | "cancelled" | "incomplete") => return Err(Error::Failed(errors())),
-        Some(_) | None => {}
+    if let Some("failed" | "cancelled" | "incomplete") = v.get("status").and_then(Value::as_str) {
+        return Err(Error::Failed(errors()));
     }
     let mut blocks: Vec<&Value> = Vec::new();
     if let Some(steps) = v.get("steps").and_then(Value::as_array) {

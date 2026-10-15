@@ -149,6 +149,9 @@
 	No API key yet: add one in Edit › Preferences › AI Generation.	Henüz API anahtarı yok: Düzen › Tercihler › Yapay Zekâ Üretimi’nden ekleyin.
 	Paste your Gemini API key	Gemini API anahtarınızı yapıştırın
 	The prompt is sent to Google Gemini.	İstem Google Gemini’ye gönderilir.
+	Use Surrounding Image	Çevreleyen görüntüyü kullan
+	Send the area around the selection so the result matches it. Leave the prompt empty to remove what is selected.	Sonucun uyması için seçimin çevresindeki alanı da gönderir. Seçili içeriği kaldırmak için istemi boş bırakın.
+	The prompt and the area around the selection are sent to Google Gemini.	İstem ve seçimin çevresindeki alan Google Gemini'ye gönderilir.
 	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	aistudio.google.com/apikey adresinden bir anahtar alın. Anahtar bu bilgisayardaki PhotoCraft tercihler dosyasında düz metin olarak saklanır ve yalnızca Google’a gönderilir. GEMINI_API_KEY ortam değişkenini kullanmak için boş bırakın.
 	AI Generation	Yapay Zekâ Üretimi
 	API Key	API Anahtarı

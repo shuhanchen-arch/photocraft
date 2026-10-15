@@ -887,18 +887,26 @@ pub struct Ai {
     pub api_key: String,
     /// The output size: `auto` (from the selection), `1K`, `2K` or `4K`.
     pub image_size: String,
+    /// Send the area around the selection with the prompt so the result matches it (on by
+    /// default); off sends the prompt alone.
+    pub use_surrounding_image: bool,
 }
 
 impl Default for Ai {
     fn default() -> Self {
-        Self { model: photocraft_genai::DEFAULT_MODEL.into(), api_key: String::new(), image_size: "auto".into() }
+        Self { model: photocraft_genai::DEFAULT_MODEL.into(), api_key: String::new(), image_size: "auto".into(), use_surrounding_image: true }
     }
 }
 
 impl std::fmt::Debug for Ai {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let key = if self.api_key.is_empty() { "" } else { "<redacted>" };
-        f.debug_struct("Ai").field("model", &self.model).field("api_key", &key).field("image_size", &self.image_size).finish()
+        f.debug_struct("Ai")
+            .field("model", &self.model)
+            .field("api_key", &key)
+            .field("image_size", &self.image_size)
+            .field("use_surrounding_image", &self.use_surrounding_image)
+            .finish()
     }
 }
 

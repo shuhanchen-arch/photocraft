@@ -176,6 +176,9 @@
 	No API key yet: add one in Edit › Preferences › AI Generation.	還沒有 API 金鑰：請在 編輯 › 偏好設定 › AI 生成 中填寫。
 	Paste your Gemini API key	貼上你的 Gemini API 金鑰
 	The prompt is sent to Google Gemini.	提示詞會傳送給 Google Gemini。
+	Use Surrounding Image	參考周圍畫面
+	Send the area around the selection so the result matches it. Leave the prompt empty to remove what is selected.	將選取範圍周圍的畫面一併傳送，讓產生的結果與之協調。提示詞留空則移除選取範圍內的內容。
+	The prompt and the area around the selection are sent to Google Gemini.	提示詞與選取範圍周圍的畫面會傳送給 Google Gemini。
 	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	在 aistudio.google.com/apikey 申請金鑰。金鑰會以明文儲存在本機的 PhotoCraft 偏好設定檔中，只會傳送給 Google。留空則使用環境變數 GEMINI_API_KEY。
 	AI Generation	AI 生成
 	API Key	API 金鑰
