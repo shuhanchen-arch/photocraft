@@ -162,6 +162,16 @@
 	Stroke…	Nachziehen…
 	Content-Aware Fill…	Inhaltsbasiert füllen…
 	Generative Fill…	Generative Füllung…
+	Prompt:	Prompt:
+	Model:	Modell:
+	Output Size:	Ausgabegröße:
+	Feather:	Weiche Kante:
+	Describe what to generate in the selection.	Beschreiben Sie, was in der Auswahl erzeugt werden soll.
+	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	Beschreiben Sie, was in der Auswahl erzeugt werden soll, z. B. „ein roter Schirm im Sand“
+	No API key yet: add one in Edit › Preferences › AI Generation.	Noch kein API-Schlüssel: Fügen Sie einen unter Bearbeiten › Voreinstellungen › KI-Generierung hinzu.
+	Paste your Gemini API key	Gemini-API-Schlüssel einfügen
+	The prompt is sent to Google Gemini.	Der Prompt wird an Google Gemini gesendet.
+	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	Einen Schlüssel erhalten Sie unter aistudio.google.com/apikey. Er wird im Klartext in der PhotoCraft-Voreinstellungsdatei auf diesem Computer gespeichert und nur an Google gesendet. Leer lassen, um die Umgebungsvariable GEMINI_API_KEY zu verwenden.
 	AI Generation	KI-Generierung
 	API Key	API-Schlüssel
 	Output Size	Ausgabegröße

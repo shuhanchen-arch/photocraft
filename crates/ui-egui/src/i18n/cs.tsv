@@ -163,6 +163,16 @@
 	Stroke…	Tah…
 	Content-Aware Fill…	Výplň s ohledem na obsah…
 	Generative Fill…	Generativní výplň…
+	Prompt:	Výzva:
+	Model:	Model:
+	Output Size:	Výstupní velikost:
+	Feather:	Prolnutí:
+	Describe what to generate in the selection.	Popište, co se má ve výběru vygenerovat.
+	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	Popište, co se má ve výběru vygenerovat, např. „červený deštník na písku“
+	No API key yet: add one in Edit › Preferences › AI Generation.	Zatím chybí klíč API: přidejte ho v Úpravy › Předvolby › Generování AI.
+	Paste your Gemini API key	Vložte svůj klíč Gemini API
+	The prompt is sent to Google Gemini.	Výzva se odešle do Google Gemini.
+	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	Klíč získáte na aistudio.google.com/apikey. Ukládá se jako prostý text do souboru předvoleb PhotoCraftu v tomto počítači a odesílá se jen společnosti Google. Ponecháte-li pole prázdné, použije se proměnná prostředí GEMINI_API_KEY.
 	AI Generation	Generování AI
 	API Key	Klíč API
 	Output Size	Výstupní velikost

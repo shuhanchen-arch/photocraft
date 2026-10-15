@@ -127,6 +127,16 @@
 	Stroke…	Обвести…
 	Content-Aware Fill…	Заливка с учётом содержимого…
 	Generative Fill…	Генеративная заливка…
+	Prompt:	Запрос:
+	Model:	Модель:
+	Output Size:	Размер вывода:
+	Feather:	Растушевка:
+	Describe what to generate in the selection.	Опишите, что сгенерировать в выделенной области.
+	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	Опишите, что сгенерировать в выделении, например «красный зонт на песке»
+	No API key yet: add one in Edit › Preferences › AI Generation.	Ключ API не задан: добавьте его в Редактирование › Настройки › Генерация ИИ.
+	Paste your Gemini API key	Вставьте ключ Gemini API
+	The prompt is sent to Google Gemini.	Запрос отправляется в Google Gemini.
+	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	Получите ключ на aistudio.google.com/apikey. Он хранится открытым текстом в файле настроек PhotoCraft на этом компьютере и отправляется только в Google. Оставьте поле пустым, чтобы использовать переменную окружения GEMINI_API_KEY.
 	AI Generation	Генерация ИИ
 	API Key	Ключ API
 	Output Size	Размер вывода

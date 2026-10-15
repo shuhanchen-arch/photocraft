@@ -23,6 +23,8 @@ use crate::{EngineError, Result, Session};
 
 /// The command id.
 pub const ID: &str = "edit.generativeFill";
+/// The environment variable read when Preferences › AI Generation has no key.
+pub const API_KEY_ENV: &str = photocraft_genai::API_KEY_ENV;
 /// History label.
 const LABEL: &str = "Generative Fill";
 /// Longest generated layer name, in characters of the prompt.

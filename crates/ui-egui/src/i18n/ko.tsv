@@ -150,6 +150,16 @@
 	Stroke…	획…
 	Content-Aware Fill…	내용 인식 채우기…
 	Generative Fill…	생성형 채우기…
+	Prompt:	프롬프트:
+	Model:	모델:
+	Output Size:	출력 크기:
+	Feather:	페더:
+	Describe what to generate in the selection.	선택 영역에 생성할 내용을 설명하세요.
+	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	선택 영역에 생성할 내용을 설명하세요(예: “모래 위의 빨간 우산”)
+	No API key yet: add one in Edit › Preferences › AI Generation.	API 키가 없습니다: 편집 › 환경 설정 › AI 생성에서 추가하세요.
+	Paste your Gemini API key	Gemini API 키를 붙여 넣으세요
+	The prompt is sent to Google Gemini.	프롬프트는 Google Gemini로 전송됩니다.
+	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	aistudio.google.com/apikey에서 키를 발급받으세요. 키는 이 컴퓨터의 PhotoCraft 환경 설정 파일에 일반 텍스트로 저장되며 Google에만 전송됩니다. 비워 두면 GEMINI_API_KEY 환경 변수를 사용합니다.
 	AI Generation	AI 생성
 	API Key	API 키
 	Output Size	출력 크기

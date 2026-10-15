@@ -167,6 +167,16 @@
 	Stroke…	筆畫…
 	Content-Aware Fill…	內容感知填滿…
 	Generative Fill…	生成式填色…
+	Prompt:	提示詞：
+	Model:	模型：
+	Output Size:	輸出尺寸：
+	Feather:	羽化：
+	Describe what to generate in the selection.	請描述要在選取範圍中產生的內容。
+	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	描述要在選取範圍裡產生的內容，例如「沙灘上的一把紅傘」
+	No API key yet: add one in Edit › Preferences › AI Generation.	還沒有 API 金鑰：請在 編輯 › 偏好設定 › AI 生成 中填寫。
+	Paste your Gemini API key	貼上你的 Gemini API 金鑰
+	The prompt is sent to Google Gemini.	提示詞會傳送給 Google Gemini。
+	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	在 aistudio.google.com/apikey 申請金鑰。金鑰會以明文儲存在本機的 PhotoCraft 偏好設定檔中，只會傳送給 Google。留空則使用環境變數 GEMINI_API_KEY。
 	AI Generation	AI 生成
 	API Key	API 金鑰
 	Output Size	輸出尺寸

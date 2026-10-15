@@ -159,6 +159,16 @@
 	Stroke…	Contornear…
 	Content-Aware Fill…	Relleno según el contenido…
 	Generative Fill…	Relleno generativo…
+	Prompt:	Indicación:
+	Model:	Modelo:
+	Output Size:	Tamaño de salida:
+	Feather:	Desvanecer:
+	Describe what to generate in the selection.	Describe qué generar en la selección.
+	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	Describe qué generar en la selección, p. ej., «un paraguas rojo en la arena»
+	No API key yet: add one in Edit › Preferences › AI Generation.	Aún no hay clave de API: añade una en Edición › Preferencias › Generación con IA.
+	Paste your Gemini API key	Pega tu clave de API de Gemini
+	The prompt is sent to Google Gemini.	La indicación se envía a Google Gemini.
+	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	Obtén una clave en aistudio.google.com/apikey. Se guarda como texto sin cifrar en el archivo de preferencias de PhotoCraft de este equipo y solo se envía a Google. Déjala vacía para usar la variable de entorno GEMINI_API_KEY.
 	AI Generation	Generación con IA
 	API Key	Clave de API
 	Output Size	Tamaño de salida

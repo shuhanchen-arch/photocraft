@@ -103,6 +103,16 @@
 	Contact Sheet II…	Kontaktlap II…
 	Content-Aware Fill…	Tartalomérzékeny kitöltés…
 	Generative Fill…	Generatív kitöltés…
+	Prompt:	Utasítás:
+	Model:	Modell:
+	Output Size:	Kimeneti méret:
+	Feather:	Lágy szél:
+	Describe what to generate in the selection.	Írja le, mit hozzon létre a kijelölésben.
+	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	Írja le, mit hozzon létre a kijelölésben, pl. „piros esernyő a homokon”
+	No API key yet: add one in Edit › Preferences › AI Generation.	Még nincs API-kulcs: adjon meg egyet a Szerkesztés › Beállítások › MI-generálás alatt.
+	Paste your Gemini API key	Illessze be a Gemini API-kulcsát
+	The prompt is sent to Google Gemini.	Az utasítás a Google Gemini szolgáltatásnak lesz elküldve.
+	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	Kulcsot az aistudio.google.com/apikey oldalon kaphat. Titkosítás nélkül, a PhotoCraft beállításfájljában tárolódik ezen a gépen, és csak a Google kapja meg. Hagyja üresen a GEMINI_API_KEY környezeti változó használatához.
 	AI Generation	MI-generálás
 	API Key	API-kulcs
 	Output Size	Kimeneti méret

@@ -64,7 +64,7 @@ pub fn fields(app: &PhotocraftApp) -> Map<String, Value> {
 
 /// Whether a key is available: in Preferences or the environment.
 fn has_key(app: &PhotocraftApp) -> bool {
-    !app.session.prefs().ai.api_key.trim().is_empty() || std::env::var(photocraft_genai::API_KEY_ENV).is_ok_and(|k| !k.trim().is_empty())
+    !app.session.prefs().ai.api_key.trim().is_empty() || std::env::var(photocraft_engine::genai_cmds::API_KEY_ENV).is_ok_and(|k| !k.trim().is_empty())
 }
 
 pub fn open(app: &mut PhotocraftApp) -> u64 {

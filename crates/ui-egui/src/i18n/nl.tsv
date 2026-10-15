@@ -149,6 +149,16 @@
 	Stroke…	Omlijnen…
 	Content-Aware Fill…	Inhoudsbewust vullen…
 	Generative Fill…	Generatief vullen…
+	Prompt:	Prompt:
+	Model:	Model:
+	Output Size:	Uitvoergrootte:
+	Feather:	Doezelaar:
+	Describe what to generate in the selection.	Beschrijf wat er in de selectie moet worden gegenereerd.
+	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	Beschrijf wat er in de selectie moet komen, bijv. „een rode paraplu op het zand”
+	No API key yet: add one in Edit › Preferences › AI Generation.	Nog geen API-sleutel: voeg er een toe via Bewerken › Voorkeuren › AI-generatie.
+	Paste your Gemini API key	Plak je Gemini API-sleutel
+	The prompt is sent to Google Gemini.	De prompt wordt naar Google Gemini verzonden.
+	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	Vraag een sleutel aan op aistudio.google.com/apikey. Hij wordt als platte tekst opgeslagen in het voorkeurenbestand van PhotoCraft op deze computer en alleen naar Google verzonden. Laat leeg om de omgevingsvariabele GEMINI_API_KEY te gebruiken.
 	AI Generation	AI-generatie
 	API Key	API-sleutel
 	Output Size	Uitvoergrootte

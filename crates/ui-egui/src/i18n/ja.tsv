@@ -158,6 +158,16 @@
 	Stroke…	境界線を描く…
 	Content-Aware Fill…	コンテンツに応じた塗りつぶし…
 	Generative Fill…	生成塗りつぶし…
+	Prompt:	プロンプト:
+	Model:	モデル:
+	Output Size:	出力サイズ:
+	Feather:	ぼかし:
+	Describe what to generate in the selection.	選択範囲に生成する内容を入力してください。
+	Describe what to generate in the selection, e.g. “a red umbrella on the sand”	選択範囲に生成する内容を入力（例：「砂浜の赤い傘」）
+	No API key yet: add one in Edit › Preferences › AI Generation.	API キーが未設定です：編集 › 環境設定 › AI 生成 で追加してください。
+	Paste your Gemini API key	Gemini API キーを貼り付け
+	The prompt is sent to Google Gemini.	プロンプトは Google Gemini に送信されます。
+	Get a key at aistudio.google.com/apikey. It is saved in PhotoCraft's preferences file on this computer, in plain text, and sent only to Google. Leave it empty to use the GEMINI_API_KEY environment variable.	キーは aistudio.google.com/apikey で取得できます。このコンピューターの PhotoCraft 環境設定ファイルに平文で保存され、Google にのみ送信されます。空欄の場合は環境変数 GEMINI_API_KEY を使用します。
 	AI Generation	AI 生成
 	API Key	API キー
 	Output Size	出力サイズ
