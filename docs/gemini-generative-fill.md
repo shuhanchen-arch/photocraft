@@ -1,6 +1,6 @@
 # 框选生成（Gemini Generative Fill）设计
 
-状态（2026-10-15）：第 1、2 步已实现。第 1 步：`crates/genai`、`edit.generativeFill`、Edit › Generative Fill… 对话框；首次真实调用发现模型只接受 `response_format.mime_type: image/jpeg`，已改。第 2 步（默认开启，参数 `context`，偏好设置 `ai.useSurroundingImage`，对话框复选框"参考周围画面"）：上下文窗口 + 宽高比对齐（`context_window`）、8 位 sRGB PNG 原图 + 洋红标记图、提示词模板（空提示词 = 移除）、精确缩放回窗口、从 sRGB 转回文档配置文件、对齐校正（3.4 第 5 条，`genai_align.rs`：在蒙版羽化边缘外 32px 环带上先粗后细搜索平移，最多窗口长边的 2%、不超过 24px，结果写进返回值 `alignment`）、蒙版扩 4px 羽化 4px。窗口找不到能放进画布的受支持比例时（比如选区铺满一张 7:5 的画布），用最接近的比例，贴回时轻微拉伸。第 3–4 步未开始。分支 `feature/gemini-image`。
+状态（2026-10-15）：第 1、2 步已实现。第 1 步：`crates/genai`、`edit.generativeFill`、Edit › Generative Fill… 对话框；首次真实调用发现模型只接受 `response_format.mime_type: image/jpeg`，已改。第 2 步（默认开启，参数 `context`，偏好设置 `ai.useSurroundingImage`，对话框复选框"参考周围画面"）：上下文窗口 + 宽高比对齐（`context_window`）、一张 8 位 sRGB PNG（选区外画红色轮廓线，见 3.3）、提示词模板（空提示词 = 移除）、结果校验 + 无效时自动重试一次（见 3.4 第 6 条）、精确缩放回窗口、从 sRGB 转回文档配置文件、对齐校正（3.4 第 5 条，`genai_align.rs`：在红色轮廓线外侧 32px 宽的环带上先粗后细搜索平移，最多窗口长边的 2%、不超过 24px，结果写进返回值 `alignment`）、蒙版扩 4px 羽化 4px、取样图层（参数 `sampleLayer`：所有图层 / 当前及下方图层 / 当前图层，对话框"取样"下拉，记住上次的选择；连续生成时选"当前图层"并选中原图层，就不会把之前的生成结果当成周围画面）。窗口找不到能放进画布的受支持比例时（比如选区铺满一张 7:5 的画布），用最接近的比例，贴回时轻微拉伸。第 3–4 步未开始。分支 `feature/gemini-image`。
 
 ## 1. 用户流程
 
@@ -17,7 +17,7 @@
 | 模式 | 上传内容 | 效果 | 阶段 |
 |---|---|---|---|
 | **A. 纯生成** | 只传提示词，按框的宽高比出图 | 框里出现一张全新的图，与周围无关 | 第一阶段，最简单，用来打通全链路 |
-| **B. 结合场景（默认）** | 框内外一圈的**上下文截图** + 选区标记图 + 提示词 | 生成内容的光照、透视、风格和周围一致，边缘能接上 | 第二阶段，你说的"把框里的和提示词一起上传" |
+| **B. 结合场景（默认）** | 框内外一圈的**上下文截图**（选区外画红色轮廓线）+ 提示词 | 生成内容的光照、透视、风格和周围一致，边缘能接上 | 第二阶段，你说的"把框里的和提示词一起上传" |
 
 两种模式共用同一条链路，区别只在请求里是否带图片。对话框里提供"参考周围画面"复选框，默认开启。
 
@@ -36,13 +36,26 @@
 
 ### 3.3 怎么告诉模型"只改哪里"
 Gemini 目前**没有像素级蒙版参数**，只支持在对话里用文字描述要改的区域（官方叫 semantic masking）。所以：
-- **图 1**：原始上下文截图。
-- **图 2**：同一张图，选区部分盖一层半透明洋红色，外加 2px 描边。
-- 提示词模板（内部拼接，用户看不到）：
-  > Image 1 is a photo. Image 2 is the same photo with the region to change highlighted in magenta.
-  > In image 1, change ONLY the highlighted region: {用户提示词}. Keep everything outside it pixel-identical,
-  > with the same framing, perspective, lighting and style. Return only the edited image 1, same aspect ratio.
-- 用户提示词为空时，换成"remove the content of the highlighted region and fill it naturally from the surroundings"。
+**原则：不指望模型听话，而是让它犯错也无害。** 只发**一张图**：上下文截图，选区内保持原样，在选区外沿选区形状画一圈
+3px 的纯红轮廓线（`genai_cmds::Outline`）。红线从"生成图层可见范围"再往外 8px 开始（默认蒙版扩 4px、羽化 σ=4，
+可见范围约 4 + 3×4 = 16px，所以红线在选区外 24–27px）；上传前缩小了的话，线宽按比例加粗，保证上传图里仍有 3px。
+贴回时选区外的像素全部来自原图，所以就算模型把红线原样留着，也落在被遮住的地方。
+
+试过又放弃的做法（2026-10-15 实测）：
+- 第二张图是"同一张照片，选区盖半透明洋红 + 2px 描边"：模型有时把这张标记图当成底图来改，洋红色渗进选区，
+  而且下一次生成会把带紫色的图层当成周围画面上传，越来越紫。
+- 第二张图换成黑白蒙版：模型又把蒙版的白色叠进了选区（船周围一圈白光、水面一大片纯白）。
+- 结论：Gemini 是通用编辑模型，会把输入的几张图"合成"进结果；只要选区里有标记、或者有第二张图，就有渗进去的风险。
+
+提示词模板（内部拼接，用户看不到，见 `genai_cmds::context_prompt`）：
+> This photo has a red outline drawn on it. Change ONLY the area inside the red outline: change it to: {用户提示词}.
+> Keep any new object entirely inside the outline, well away from it. Keep everything outside the outline exactly as
+> it is, with the same framing, perspective, lighting and colours, and blend the change in seamlessly. Return the
+> edited photo without the red outline, at the same size and aspect ratio.
+
+用户提示词为空时，换成"remove what is there and fill it in naturally from the surroundings"。
+
+以后要接真正的局部重绘模型（本地 ComfyUI + FLUX.1 Fill [dev]，或云端 API）时，它们原生接受蒙版，就不需要红线了。
 
 ### 3.4 结果怎么贴回去（保证框外绝对不变）
 模型返回的图**不可信**：分辨率不同、可能轻微平移、框外颜色可能被它"顺手"改了。所以不依赖模型，在本地保证：
@@ -50,7 +63,13 @@ Gemini 目前**没有像素级蒙版参数**，只支持在对话里用文字描
 2. 转回文档的位深和色彩模式，作为像素图层放在窗口位置（`place_bytes` 的 `center` 和 `scale` 参数或直接构造 Raster 图层）。
 3. 加图层蒙版 = 选区，**向外扩 4px 再羽化 4px**，把接缝藏起来。框外的部分被蒙版挡住，原图保持不变。
 4. （可选，第二阶段后半）**色彩校正**：比较选区外一圈环带上"生成图 vs 原图"的均值和方差，对生成图做一次线性颜色匹配，消除整体偏色。
-5. （可选，以后）**对齐校正**：模型偶尔整体平移几个像素时，用环带做相位相关，求出偏移后再贴。
+5. **对齐校正**（已实现，`genai_align.rs`）：模型常把整张图平移几个像素。在红色轮廓线外侧 32px 宽的环带上比较亮度
+   （去掉均值差），先在长边不超过 1024px 的缩小图上全范围搜索，再在原尺寸上逐像素细化；最多窗口长边的 2%（4–24px）。
+   平移量不会大到让蒙版下面露出空隙。
+6. **结果校验**（已实现）：在同一环带上计算返回图与原图的归一化互相关（对亮度、对比度变化不敏感）。
+   低于 0.35 说明返回的不是这张图（比如一张空白图，或者画了一个不相干的场景）：自动重试一次，
+   第二次仍不合格就报错，文档不变。环带太小或原图在环带上是一片纯色（比如天空）时无法判断，直接接受。
+   相似度、偏移量、尝试次数都写进命令返回值（`alignment.similarity`、`attempts`），方便以后调阈值。
 
 ### 3.5 放大过度的提醒
 如果窗口比模型输出大很多（比如在 8000px 的照片上框了半张图，模型只出 2K），贴回去要放大 2 倍以上，会发糊。
@@ -98,6 +117,6 @@ Gemini 目前**没有像素级蒙版参数**，只支持在对话里用文字描
 ## 7. 实施顺序
 
 1. `crates/genai` + 纯生成（模式 A）+ 菜单入口 + 环境变量 key：先打通"框选 → 出图 → 新图层 + 蒙版"。
-2. 模式 B：上下文窗口、宽高比对齐、标记图、提示词模板、贴回羽化。
+2. 模式 B：上下文窗口、宽高比对齐、蒙版图、提示词模板、贴回羽化、对齐校正、结果校验。
 3. 浮动提示栏 + 偏好设置 AI 页 + 首次使用隐私提示。
 4. 色彩校正、放大提醒、多候选（一次生成 3 张，可在图层属性里切换）。

@@ -5,14 +5,22 @@
 //! Two modes (`docs/gemini-generative-fill.md`):
 //!
 //! * **Surrounding image** (`context`, the default): a window around the selection
-//!   ([`context_window`], padded and grown to an aspect ratio the models accept) is sent as two
-//!   8-bit sRGB PNGs, the visible composite and the same with the selection marked in magenta
-//!   ([`context_images`]), with a prompt asking to change only the marked region
-//!   ([`context_prompt`]). The reply is scaled back to the window's exact size and masked by the
+//!   ([`context_window`], padded and grown to an aspect ratio the models accept) is sent as one
+//!   8-bit sRGB PNG of the visible composite with a red outline drawn around the selection
+//!   ([`context_images`]), and a prompt asking to change only what is inside the outline
+//!   ([`context_prompt`]). The outline runs where the layer mask hides the reply ([`Outline`]),
+//!   so if the model keeps it, nobody sees it. Earlier designs sent a second image (the photo
+//!   with the selection tinted magenta, then a black-and-white mask) and the models sometimes
+//!   blended that image into the selection. The reply is scaled back to the window's exact size and masked by the
 //!   selection grown by `expand` px and feathered by `feather` px, so nothing outside the
 //!   selection changes. The models redraw the whole picture and often shift it a few pixels, so
 //!   the reply is first lined up with the original on a ring outside the selection
-//!   ([`crate::genai_align`]). An empty prompt asks to remove what is selected.
+//!   ([`crate::genai_align`]). A reply that doesn't match the picture on that ring (an unrelated
+//!   or blank image) is rejected and asked for once more ([`with_retry`]); a second miss fails
+//!   with nothing added. An empty prompt asks to remove what is selected. `sampleLayer` picks
+//!   which layers the surroundings are read from ([`Sample`]): all of them (the default, so
+//!   earlier results are part of the picture), or only the active layer and those below it, or
+//!   the active layer alone, so repeated fills can start from the original photo every time.
 //! * **Text only** (`context: false`): the prompt alone, with the aspect ratio closest to the
 //!   selection's bounds; the reply is scaled to cover those bounds.
 //!
@@ -40,8 +48,8 @@ const LABEL: &str = "Generative Fill";
 const NAME_CHARS: usize = 32;
 /// Largest selection bounds accepted (pixels), so scaling the reply up can't exhaust memory.
 const MAX_AREA: u64 = 400_000_000;
-/// Largest window read around the selection (pixels): the composite and the two images sent are
-/// held in memory at once.
+/// Largest window read around the selection (pixels): the composite and the image sent are held
+/// in memory at once.
 const MAX_CONTEXT_AREA: u64 = 64_000_000;
 /// The context window reaches at least this far past the selection's bounds…
 const CONTEXT_MIN_PAD: u32 = 64;
@@ -52,13 +60,19 @@ const CONTEXT_EXPAND: f32 = 4.0;
 const CONTEXT_FEATHER: f32 = 4.0;
 /// Largest `expand` accepted (px).
 const MAX_EXPAND: f64 = 100.0;
-/// The marker drawn over the selection in the second image: magenta, half covering inside, with
-/// a solid outline this wide (px).
-const MARK: [f32; 3] = [1.0, 0.0, 1.0];
-const MARK_OPACITY: f32 = 0.5;
-const MARK_OUTLINE: f32 = 2.0;
-/// Width (px) of the ring outside the mask's soft edge that the alignment compares.
+/// A reply whose ring outside the selection correlates less than this with the original's
+/// ([`crate::genai_align::similarity`]) is not the picture: faithful redraws score above 0.9,
+/// a blank or unrelated image about 0.
+const MIN_SIMILARITY: f64 = 0.35;
+/// Requests per generation: the first, and one more after a rejected reply.
+const MAX_ATTEMPTS: usize = 2;
+/// Width (px) of the ring, just outside the outline, that the alignment compares.
 const ALIGN_BAND: f32 = 32.0;
+/// The outline drawn around the selection: pure red, starting this far (px) beyond the reach of
+/// the layer mask, and this wide (px) in the image as sent.
+const OUTLINE_COLOR: [f32; 3] = [1.0, 0.0, 0.0];
+const OUTLINE_CLEARANCE: f32 = 8.0;
+const OUTLINE_WIDTH: f32 = 3.0;
 /// Largest alignment shift: this fraction of the window's long side, within the bounds below.
 const ALIGN_SHIFT_FRACTION: f32 = 0.02;
 const ALIGN_SHIFT_MIN: f32 = 4.0;
@@ -74,6 +88,52 @@ fn has_selection(s: &Session) -> std::result::Result<(), String> {
     if sel.content_bounds().intersect(&d.doc.bounds()).is_empty() { Err("the selection is empty or outside the canvas".into()) } else { Ok(()) }
 }
 
+/// Which layers the surrounding image is read from (`sampleLayer`), as in Photoshop's Sample
+/// menus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sample {
+    /// Every visible layer: the picture as shown.
+    All,
+    /// The active layer and the visible layers below it.
+    CurrentAndBelow,
+    /// The active layer alone.
+    Current,
+}
+
+impl Sample {
+    fn id(self) -> &'static str {
+        match self {
+            Sample::All => "all",
+            Sample::CurrentAndBelow => "currentAndBelow",
+            Sample::Current => "current",
+        }
+    }
+}
+
+/// `doc` with only the layers `sample` reads from left visible. `active` is the active layer;
+/// without one every visible layer is read. The active layer's enclosing groups stay as they are,
+/// so it composites as it does on the canvas.
+fn sampled_doc(doc: &Document, active: Option<photocraft_doc::LayerId>, sample: Sample) -> Document {
+    let mut out = doc.clone();
+    let Some(active) = active.filter(|_| sample != Sample::All) else { return out };
+    // Bottom to top, groups before their contents.
+    let walk: Vec<(Vec<usize>, photocraft_doc::LayerId)> = doc.walk().into_iter().map(|(p, _, l)| (p, l.id)).collect();
+    let Some(at) = walk.iter().position(|(_, id)| *id == active) else { return out };
+    let active_path = walk[at].0.clone();
+    for (i, (path, _)) in walk.iter().enumerate() {
+        let ancestor_or_self = active_path.starts_with(path);
+        let hide = match sample {
+            Sample::All => false,
+            Sample::CurrentAndBelow => i > at && !ancestor_or_self,
+            Sample::Current => !ancestor_or_self,
+        };
+        if hide && let Some(l) = out.layer_at_mut(path) {
+            l.visible = false;
+        }
+    }
+    out
+}
+
 /// Validated params.
 #[derive(Debug)]
 struct Params {
@@ -85,6 +145,7 @@ struct Params {
     feather: f32,
     expand: f32,
     context: bool,
+    sample: Sample,
 }
 
 fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>> {
@@ -142,20 +203,26 @@ fn params(p: &Value, ai: &crate::prefs::Ai) -> Result<Params> {
     let sent = if context { context_prompt(&prompt) } else { prompt.clone() };
     let request = photocraft_genai::Request { model: model.clone(), prompt: sent, images: Vec::new(), aspect_ratio: None, image_size: image_size.clone() };
     request.validate().map_err(|e| bad(e.to_string()))?;
-    Ok(Params { prompt, model, image_size, api_key, feather, expand, context })
+    let sample = match opt_str(p, "sampleLayer")?.map(str::trim) {
+        None | Some("" | "all") => Sample::All,
+        Some("currentAndBelow") => Sample::CurrentAndBelow,
+        Some("current") => Sample::Current,
+        Some(o) => return Err(bad(format!("unknown sampleLayer `{o}` (all|currentAndBelow|current)"))),
+    };
+    Ok(Params { prompt, model, image_size, api_key, feather, expand, context, sample })
 }
 
 /// The prompt sent with the surrounding image: the user's words wrapped in instructions to edit
-/// only the region marked in the second image. An empty prompt asks to remove what is there.
+/// only what the red outline encloses. An empty prompt asks to remove what is there.
 fn context_prompt(user: &str) -> String {
     let user = user.split_whitespace().collect::<Vec<_>>().join(" ");
     let change =
         if user.is_empty() { "remove what is there and fill it in naturally from the surroundings".to_string() } else { format!("change it to: {user}") };
     format!(
-        "Image 1 is a photo. Image 2 is the same photo with the region to change highlighted in magenta. \
-         In image 1, change ONLY the highlighted region: {change}. Keep everything outside it identical, with the same \
-         framing, perspective, lighting and style, and blend the edges seamlessly. Return only the edited image 1, at \
-         the same aspect ratio, with no magenta in it."
+        "This photo has a red outline drawn on it. Change ONLY the area inside the red outline: {change}. Keep any new \
+         object entirely inside the outline, well away from it. Keep everything outside the outline exactly as it is, \
+         with the same framing, perspective, lighting and colours, and blend the change in seamlessly. Return the \
+         edited photo without the red outline, at the same size and aspect ratio."
     )
 }
 
@@ -242,20 +309,38 @@ fn size_px(size: &str) -> usize {
     }
 }
 
-/// `rgb` (interleaved, `w × h`) with the selection coverage `cover` marked: [`MARK`] at
-/// [`MARK_OPACITY`] inside, solid within [`MARK_OUTLINE`] px of its edge.
-fn mark(rgb: &[f32], cover: &[f32], w: usize, h: usize) -> Vec<f32> {
-    let outside: Vec<bool> = cover.iter().map(|c| *c < 0.5).collect();
-    let to_outside = photocraft_algo::selection::edt(&outside, w, h);
-    rgb.chunks_exact(3)
-        .zip(cover)
-        .enumerate()
-        .flat_map(|(i, (px, &c))| {
-            let edge = c >= 0.5 && to_outside.get(i).is_some_and(|d| *d <= MARK_OUTLINE);
-            let a = if edge { 1.0 } else { c.clamp(0.0, 1.0) * MARK_OPACITY };
-            [0, 1, 2].map(|k| px.get(k).copied().unwrap_or(0.0) * (1.0 - a) + MARK[k] * a)
-        })
-        .collect()
+/// Where the red outline runs, in window pixels from the selection: from `start` to
+/// `start + width`. It starts [`OUTLINE_CLEARANCE`] px past the farthest the layer mask shows the
+/// reply (the selection grown by `expand`, plus three feather sigmas), so an outline the model
+/// keeps stays hidden; it is wide enough to be [`OUTLINE_WIDTH`] px in the image as sent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Outline {
+    start: f32,
+    width: f32,
+}
+
+impl Outline {
+    fn new(expand: f32, feather: f32, (w, h): (usize, usize), max_side: usize) -> Self {
+        let shrink = (w.max(h) as f32 / max_side.max(1) as f32).max(1.0);
+        Self { start: expand + 3.0 * feather + OUTLINE_CLEARANCE, width: OUTLINE_WIDTH * shrink }
+    }
+
+    /// Where the alignment ring starts: clear of the outline, whether or not the model kept it.
+    fn ring_gap(self) -> f32 {
+        self.start + self.width + 3.0
+    }
+}
+
+/// Draws `outline` ([`OUTLINE_COLOR`]) into `rgb` (interleaved, `w × h`) around the pixels the
+/// selection `cover` touches.
+fn draw_outline(rgb: &mut [f32], cover: &[f32], w: usize, h: usize, outline: Outline) {
+    let inside: Vec<bool> = cover.iter().map(|c| *c > 0.0).collect();
+    let d = photocraft_algo::selection::edt(&inside, w, h);
+    for (px, d) in rgb.chunks_exact_mut(3).zip(&d) {
+        if *d > outline.start && *d <= outline.start + outline.width {
+            px.copy_from_slice(&OUTLINE_COLOR);
+        }
+    }
 }
 
 /// `rgb` (interleaved, `w × h`) shrunk by area averaging so its long side is at most `max_side`;
@@ -304,19 +389,19 @@ fn png(rgb: &[f32], w: usize, h: usize) -> Result<Vec<u8>> {
     photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &photocraft_codecs::EncodeOptions::default()).map_err(err)
 }
 
-/// What [`context_images`] produces: the two PNGs sent, and the window's luminance and selection
-/// coverage at full size, for lining the reply up afterwards.
+/// What [`context_images`] produces: the PNG sent, and the window's luminance (without the
+/// outline) and selection coverage at full size, for lining the reply up and checking it.
 struct ContextImages {
     photo: Vec<u8>,
-    marked: Vec<u8>,
     luma: Vec<f32>,
     cover: Vec<f32>,
+    outline: Outline,
 }
 
-/// The two images sent with the surrounding image: the visible composite of `window` over white,
-/// converted to 8-bit sRGB, and the same with `sel` marked ([`mark`]); both PNG, shrunk to at
-/// most `max_side` px on the long side.
-fn context_images(doc: &Document, sel: &Surface, window: Rect, max_side: usize) -> Result<ContextImages> {
+/// The image sent with the surrounding image: the visible composite of `window` over white,
+/// converted to 8-bit sRGB, with the selection outlined in red ([`Outline`] for `expand` and
+/// `feather`), as a PNG shrunk to at most `max_side` px on the long side.
+fn context_images(doc: &Document, sel: &Surface, window: Rect, max_side: usize, expand: f32, feather: f32) -> Result<ContextImages> {
     let (w, h) = (window.width() as usize, window.height() as usize);
     let too_large = || EngineError::Other("the area around the selection is too large to send: select a smaller area".into());
     let n = w.checked_mul(h).filter(|n| *n > 0 && *n as u64 <= MAX_CONTEXT_AREA).ok_or_else(too_large)?;
@@ -335,29 +420,55 @@ fn context_images(doc: &Document, sel: &Surface, window: Rect, max_side: usize) 
     if cover.len() != n {
         return Err(EngineError::Other("could not read the selection".into()));
     }
-    let marked = mark(&rgb, &cover, w, h);
+    let luma = crate::genai_align::luma(&rgb);
+    let outline = Outline::new(expand, feather, (w, h), max_side);
+    draw_outline(&mut rgb, &cover, w, h, outline);
     let (photo, pw, ph) = downscale(&rgb, w, h, max_side);
     let photo = png(&photo, pw, ph)?;
-    let (marked, mw, mh) = downscale(&marked, w, h, max_side);
-    let marked = png(&marked, mw, mh)?;
-    Ok(ContextImages { photo, marked, luma: crate::genai_align::luma(&rgb), cover })
+    Ok(ContextImages { photo, luma, cover, outline })
 }
 
 /// How far to move the reply so it lines up with the original window around the selection
 /// ([`crate::genai_align::estimate`]); no offset when the reply can't be read or nothing clearly
 /// better is found. The reply is compared as sRGB, as it was sent.
-fn align_reply(generated: &photocraft_genai::Generated, reference: &ContextImages, window: Rect, expand: f32, feather: f32) -> crate::genai_align::Alignment {
+fn align_reply(generated: &photocraft_genai::Generated, reference: &ContextImages, window: Rect) -> crate::genai_align::Alignment {
     let Ok(imported) = photocraft_io::import(&format!("generated.{}", reply_ext(&generated.mime_type)), &generated.bytes) else { return Default::default() };
     let src = imported.document;
     let buf = photocraft_compose::render(&src, src.bounds()).over_background([1.0; 3]);
     let rgb: Vec<f32> = buf.px.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
     let (w, h) = (window.width() as usize, window.height() as usize);
     let max_shift = (w.max(h) as f32 * ALIGN_SHIFT_FRACTION).clamp(ALIGN_SHIFT_MIN, ALIGN_SHIFT_MAX);
-    // Compare beyond where the mask fades out (the feather is a Gaussian sigma: 2σ is nearly gone).
-    let gap = expand + 2.0 * feather + 2.0;
+    // Compare just outside the outline: past where the mask shows the reply, and not on the line.
     let size = (src.size.width as usize, src.size.height as usize);
-    let reach = crate::genai_align::Reach { gap, band: ALIGN_BAND, max_shift };
+    let reach = crate::genai_align::Reach { gap: reference.outline.ring_gap(), band: ALIGN_BAND, max_shift };
     crate::genai_align::estimate(&reference.luma, &reference.cover, (w, h), &crate::genai_align::luma(&rgb), size, reach)
+}
+
+/// Whether a reply lined up as `a` is the picture: rejected (with the reason) when its ring
+/// outside the selection is unlike the original's ([`MIN_SIMILARITY`]). A ring that can't tell
+/// (too small, flat) accepts it.
+fn verdict(a: &crate::genai_align::Alignment) -> std::result::Result<(), String> {
+    match a.similarity {
+        Some(sim) if sim < MIN_SIMILARITY => Err(format!(
+            "Gemini's result doesn't match the picture around the selection (similarity {sim:.2}), so nothing was added. Try again, or rephrase the prompt."
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Runs `attempt` (given its 1-based number) until it returns an accepted result, at most
+/// `max` times. `Err` from `attempt` (network, cancellation) ends at once; `Ok(Err(reason))` is a
+/// rejected result, tried again while attempts remain, and the last reason is the error.
+/// Returns the result and how many attempts it took.
+fn with_retry<T>(max: usize, mut attempt: impl FnMut(usize) -> Result<std::result::Result<T, String>>) -> Result<(T, usize)> {
+    let mut last = String::from("no attempt was made");
+    for n in 1..=max {
+        match attempt(n)? {
+            Ok(t) => return Ok((t, n)),
+            Err(reason) => last = reason,
+        }
+    }
+    Err(EngineError::Other(last))
 }
 
 /// The file extension `photocraft_io::import` should see for a reply of `mime`.
@@ -465,6 +576,7 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
     has_selection(s).map_err(bad)?;
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let doc = st.doc.clone();
+    let active = st.active_layer;
     let canvas = doc.bounds();
     let sel: Surface = doc.selection.clone().ok_or_else(|| bad("no selection"))?;
     let hb = sel.content_bounds().intersect(&canvas);
@@ -492,7 +604,8 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let name = layer_name(&prm.prompt);
     let (feather, expand, context) = (prm.feather, prm.expand, prm.context);
-    let info = json!({"model": prm.model, "aspectRatio": ratio, "imageSize": image_size, "context": context});
+    let sample = prm.sample;
+    let info = json!({"model": prm.model, "aspectRatio": ratio, "imageSize": image_size, "context": context, "sampleLayer": sample.id()});
     let max_side = size_px(&image_size);
     crate::jobs::run(
         s,
@@ -503,35 +616,44 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
             let mut reference = None;
             if let Fit::Exact(window) = fit {
                 ctx.progress(0.02, "Reading the area around the selection…");
-                let mut images = context_images(&doc, &sel, window, max_side)?;
-                let png = |bytes| photocraft_genai::InputImage { mime_type: "image/png".into(), bytes };
-                request.images = vec![png(std::mem::take(&mut images.photo)), png(std::mem::take(&mut images.marked))];
+                let read = sampled_doc(&doc, active, sample);
+                let mut images = context_images(&read, &sel, window, max_side, expand, feather)?;
+                request.images = vec![photocraft_genai::InputImage { mime_type: "image/png".into(), bytes: std::mem::take(&mut images.photo) }];
                 reference = Some((window, images));
                 ctx.check()?;
             }
-            ctx.progress(0.05, "Generating with Gemini…");
-            let generated = photocraft_genai::generate(&request, &config).map_err(|e| EngineError::Other(e.to_string()))?;
-            ctx.check()?;
-            ctx.progress(0.85, "Lining the result up…");
+            // Generate, then line the reply up and check it is the picture; a rejected reply is
+            // asked for once more.
+            let ((generated, found), attempts) = with_retry(MAX_ATTEMPTS, |n| {
+                let what = if n == 1 { "Generating with Gemini…" } else { "The result didn't match the picture: generating again…" };
+                ctx.progress(if n == 1 { 0.05 } else { 0.45 }, what);
+                let generated = photocraft_genai::generate(&request, &config).map_err(|e| EngineError::Other(e.to_string()))?;
+                ctx.check()?;
+                let Some((window, images)) = &reference else { return Ok(Ok((generated, None))) };
+                ctx.progress(0.85, "Lining the result up…");
+                let a = align_reply(&generated, images, *window);
+                ctx.check()?;
+                Ok(verdict(&a).map(|()| (generated, Some(a))))
+            })?;
             let mask = expanded_mask(&sel, expand, canvas);
-            let (shift, found) = match &reference {
-                Some((window, images)) => {
-                    let a = align_reply(&generated, images, *window, expand, feather);
-                    (clamp_shift((a.dx, a.dy), *window, mask.content_bounds().intersect(&canvas)), Some(a))
-                }
-                None => ((0, 0), None),
+            let shift = match (&reference, &found) {
+                (Some((window, _)), Some(a)) => clamp_shift((a.dx, a.dy), *window, mask.content_bounds().intersect(&canvas)),
+                _ => (0, 0),
             };
             ctx.check()?;
             ctx.progress(0.95, "Placing the result…");
-            Ok((generated, mask, shift, found))
+            Ok((generated, mask, shift, found, attempts))
         },
-        move |s, (generated, mask, shift, found)| {
+        move |s, (generated, mask, shift, found, attempts)| {
             let mut info = info;
-            if let (Some(o), Some(a)) = (info.as_object_mut(), found) {
-                o.insert(
-                    "alignment".into(),
-                    json!({"shift": [shift.0, shift.1], "found": [a.dx, a.dy], "error": a.error, "errorUnshifted": a.error_unshifted}),
-                );
+            if let Some(o) = info.as_object_mut() {
+                o.insert("attempts".into(), json!(attempts));
+                if let Some(a) = found {
+                    o.insert(
+                        "alignment".into(),
+                        json!({"shift": [shift.0, shift.1], "found": [a.dx, a.dy], "error": a.error, "errorUnshifted": a.error_unshifted, "similarity": a.similarity}),
+                    );
+                }
             }
             place(s, generated, mask, fit, shift, &name, feather, info)
         },
@@ -595,7 +717,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Generative Fill…",
         menu: &["Edit"],
         shortcut: None,
-        params: r##"{"prompt":string (what to generate in the selection; may be empty with context: remove what is selected), "context":bool? (send the area around the selection so the result matches it; default Preferences › AI Generation › Use Surrounding Image, on), "model":string? (default gemini-nano-banana-2.1), "imageSize":"auto"|"1K"|"2K"|"4K"?, "expand":px? (mask growth, 0..100; default 4 with context, else 0), "feather":px? (mask feather; default 4 with context, else 0), "apiKey":string?} (model, imageSize and apiKey default to Edit › Preferences › AI Generation; the key then to the GEMINI_API_KEY environment variable) -> a new layer above the active one, masked by the selection"##,
+        params: r##"{"prompt":string (what to generate in the selection; may be empty with context: remove what is selected), "context":bool? (send the area around the selection so the result matches it; default Preferences › AI Generation › Use Surrounding Image, on), "model":string? (default gemini-nano-banana-2.1), "imageSize":"auto"|"1K"|"2K"|"4K"?, "expand":px? (mask growth, 0..100; default 4 with context, else 0), "sampleLayer":"all"|"currentAndBelow"|"current"? (which layers the surroundings are read from; default all), "feather":px? (mask feather; default 4 with context, else 0), "apiKey":string?} (model, imageSize and apiKey default to Edit › Preferences › AI Generation; the key then to the GEMINI_API_KEY environment variable) -> a new layer above the active one, masked by the selection"##,
         enabled: has_selection,
         run,
         journal: true,
@@ -623,6 +745,8 @@ mod tests {
             json!({"prompt": "   ", "context": false}),
             json!({"prompt": 5}),
             json!({"prompt": "x", "context": "yes"}),
+            json!({"prompt": "x", "sampleLayer": "everything"}),
+            json!({"prompt": "x", "sampleLayer": 2}),
             json!({"prompt": "x", "model": 3}),
             json!({"prompt": "x", "model": "has space"}),
             json!({"prompt": "x", "imageSize": "8K"}),
@@ -643,8 +767,8 @@ mod tests {
         assert_eq!((p.model.as_str(), p.image_size.as_deref(), p.api_key.as_deref(), p.context), ("gemini-3-pro-image", Some("2K"), Some("pref-key"), false));
         assert_eq!((p.expand, p.feather), (0.0, 0.0), "text only: the mask is the selection");
         let p =
-            params(&json!({"prompt": "a cat", "model": "gemini-2.5-flash-image", "imageSize": "auto", "apiKey": "param-key", "context": true}), &ai).unwrap();
-        assert_eq!((p.model.as_str(), p.image_size.as_deref(), p.api_key.as_deref(), p.context), ("gemini-2.5-flash-image", None, Some("param-key"), true));
+            params(&json!({"prompt": "a cat", "model": "gemini-3.1-flash-image", "imageSize": "auto", "apiKey": "param-key", "context": true}), &ai).unwrap();
+        assert_eq!((p.model.as_str(), p.image_size.as_deref(), p.api_key.as_deref(), p.context), ("gemini-3.1-flash-image", None, Some("param-key"), true));
         // Empty or unusable saved values fall back: default model, auto size, no key (environment).
         let empty = crate::prefs::Ai { model: " ".into(), api_key: "".into(), image_size: "huge".into(), use_surrounding_image: true };
         let p = params(&json!({"prompt": "a cat"}), &empty).unwrap();
@@ -664,10 +788,35 @@ mod tests {
     }
 
     #[test]
-    fn the_context_prompt_asks_to_change_only_the_marked_region() {
+    fn the_surroundings_can_be_read_from_fewer_layers() {
+        // White background, a red result of an earlier fill above it.
+        let mut s = session_with_selection();
+        let bg = s.active().unwrap().active_layer.unwrap();
+        let sel = s.active().unwrap().doc.selection.clone().unwrap();
+        let red = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: png_file(64, 48), text: None };
+        place(&mut s, red, sel, Fit::Exact(Rect::new(0, 0, 64, 48)), (0, 0), "earlier", 0.0, json!({})).unwrap();
+        let st = s.active().unwrap();
+        let top = st.active_layer.unwrap();
+        let doc = &st.doc;
+        let pixel = |d: &Document| photocraft_compose::render(d, Rect::new(20, 12, 21, 13)).px[0];
+        let is_red = |p: [f32; 4]| p[0] > 0.99 && p[1] < 0.01;
+        assert!(is_red(pixel(&sampled_doc(doc, Some(bg), Sample::All))), "all: the earlier result shows");
+        assert!(!is_red(pixel(&sampled_doc(doc, Some(bg), Sample::Current))), "current = the background alone");
+        assert!(!is_red(pixel(&sampled_doc(doc, Some(bg), Sample::CurrentAndBelow))), "nothing below the background");
+        assert!(is_red(pixel(&sampled_doc(doc, Some(top), Sample::CurrentAndBelow))), "from the top: everything");
+        assert!(is_red(pixel(&sampled_doc(doc, None, Sample::Current))), "no active layer: as shown");
+        // The document itself is left alone.
+        assert!(doc.walk().iter().all(|(_, _, l)| l.visible));
+        let p = params(&json!({"prompt": "x", "sampleLayer": "current"}), &crate::prefs::Ai::default()).unwrap();
+        assert_eq!(p.sample, Sample::Current);
+        assert_eq!(params(&json!({"prompt": "x"}), &crate::prefs::Ai::default()).unwrap().sample, Sample::All);
+    }
+
+    #[test]
+    fn the_context_prompt_asks_to_change_only_the_outlined_area() {
         let p = context_prompt("  a  red\nboat ");
         assert!(p.contains("change it to: a red boat."), "{p}");
-        assert!(p.contains("ONLY the highlighted region") && p.contains("magenta"));
+        assert!(p.contains("ONLY the area inside the red outline") && p.contains("without the red outline") && !p.contains("mask"));
         let remove = context_prompt(" ");
         assert!(remove.contains("remove what is there"), "{remove}");
         assert!(!remove.contains("change it to"));
@@ -781,18 +930,25 @@ mod tests {
     }
 
     #[test]
-    fn the_marker_is_magenta_inside_and_leaves_the_outside_alone() {
-        let (w, h) = (10, 10);
-        let rgb = vec![0.5f32; w * h * 3];
-        let cover: Vec<f32> = (0..w * h).map(|i| if (1..9).contains(&(i % w)) && (1..9).contains(&(i / w)) { 1.0 } else { 0.0 }).collect();
-        let m = mark(&rgb, &cover, w, h);
-        let px = |x: usize, y: usize| [m[(y * w + x) * 3], m[(y * w + x) * 3 + 1], m[(y * w + x) * 3 + 2]];
-        assert_eq!(px(0, 0), [0.5, 0.5, 0.5], "outside: unchanged");
-        assert_eq!(px(1, 5), MARK, "on the edge: the solid outline");
-        assert_eq!(px(5, 5), [0.75, 0.25, 0.75], "inside: half magenta");
-        // A selection covering everything has no edge inside the window: all half magenta.
-        let all = mark(&rgb, &vec![1.0; w * h], w, h);
-        assert!(all.chunks_exact(3).all(|p| p == [0.75, 0.25, 0.75]));
+    fn the_outline_runs_where_the_mask_hides_the_reply() {
+        let o = Outline::new(CONTEXT_EXPAND, CONTEXT_FEATHER, (1000, 800), 2048);
+        // The layer shows the reply up to expand + 3 sigmas = 16 px out; the line starts 8 px later.
+        assert_eq!((o.start, o.width), (24.0, 3.0));
+        assert!(o.ring_gap() > o.start + o.width, "the alignment ring is clear of the line");
+        // A window shrunk 4× for sending gets a 4× wider line: still 3 px in the image sent.
+        assert_eq!(Outline::new(CONTEXT_EXPAND, CONTEXT_FEATHER, (4096, 2000), 1024).width, 12.0);
+        assert_eq!(Outline::new(0.0, 0.0, (10, 10), 0).start, OUTLINE_CLEARANCE);
+        // Drawn around the selection's shape, outside it only.
+        let (w, h) = (100, 100);
+        let cover: Vec<f32> = (0..w * h).map(|i| if (40..60).contains(&(i % w)) && (40..60).contains(&(i / w)) { 1.0 } else { 0.0 }).collect();
+        let mut rgb = vec![0.5f32; w * h * 3];
+        draw_outline(&mut rgb, &cover, w, h, Outline { start: 10.0, width: 3.0 });
+        let px = |x: usize, y: usize| [rgb[(y * w + x) * 3], rgb[(y * w + x) * 3 + 1], rgb[(y * w + x) * 3 + 2]];
+        assert_eq!(px(71, 50), OUTLINE_COLOR, "12 px right of the selection's last column");
+        assert_eq!(px(28, 50), OUTLINE_COLOR, "12 px left of its first");
+        assert_eq!(px(50, 50), [0.5; 3], "inside: untouched");
+        assert_eq!(px(65, 50), [0.5; 3], "nearer than the start: untouched");
+        assert_eq!(px(75, 50), [0.5; 3], "past the width: untouched");
     }
 
     #[test]
@@ -814,20 +970,18 @@ mod tests {
         let st = s.active().unwrap();
         let sel = st.doc.selection.clone().unwrap();
         let window = Rect::new(0, 0, 60, 40);
-        let ContextImages { photo, marked, luma, cover } = context_images(&st.doc, &sel, window, 1024).unwrap();
+        let ContextImages { photo, luma, cover, .. } = context_images(&st.doc, &sel, window, 1024, CONTEXT_EXPAND, CONTEXT_FEATHER).unwrap();
         assert_eq!((luma.len(), cover.len()), (60 * 40, 60 * 40), "kept at full size for the alignment");
         let size = |png: &[u8]| {
             let i = photocraft_codecs::decode(png).unwrap();
             (i.width(), i.height())
         };
         assert_eq!(size(&photo), (60, 40));
-        assert_eq!(size(&marked), (60, 40));
-        assert_ne!(photo, marked, "the selection is marked in the second image");
         // Shrunk to the output size's long side.
-        let small = context_images(&st.doc, &sel, window, 30).unwrap().photo;
+        let small = context_images(&st.doc, &sel, window, 30, CONTEXT_EXPAND, CONTEXT_FEATHER).unwrap().photo;
         assert_eq!(size(&small), (30, 20));
         // Absurd windows are refused before anything is read.
-        assert!(context_images(&st.doc, &sel, Rect::new(0, 0, 100_000, 100_000), 1024).is_err());
+        assert!(context_images(&st.doc, &sel, Rect::new(0, 0, 100_000, 100_000), 1024, CONTEXT_EXPAND, CONTEXT_FEATHER).is_err());
     }
 
     #[test]
@@ -962,16 +1116,16 @@ mod tests {
         let st = s.active().unwrap();
         let (doc, sel) = (st.doc.clone(), st.doc.selection.clone().unwrap());
         let (window, _) = context_window(sel.content_bounds(), doc.bounds()).unwrap();
-        let reference = context_images(&doc, &sel, window, 4096).unwrap();
+        let reference = context_images(&doc, &sel, window, 4096, CONTEXT_EXPAND, CONTEXT_FEATHER).unwrap();
         // The "model" draws the window 4 px left and 2 px up of where it belongs.
         let bytes = texture_png(window.x0 + 4, window.y0 + 2, window.width(), window.height());
         let generated = photocraft_genai::Generated { mime_type: "image/png".into(), bytes, text: None };
-        let a = align_reply(&generated, &reference, window, CONTEXT_EXPAND, CONTEXT_FEATHER);
+        let a = align_reply(&generated, &reference, window);
         assert_eq!((a.dx, a.dy), (4, 2), "{a:?}");
         // A reply that is already in place stays there.
         let bytes = texture_png(window.x0, window.y0, window.width(), window.height());
         let generated = photocraft_genai::Generated { mime_type: "image/png".into(), bytes, text: None };
-        let a = align_reply(&generated, &reference, window, CONTEXT_EXPAND, CONTEXT_FEATHER);
+        let a = align_reply(&generated, &reference, window);
         assert_eq!((a.dx, a.dy), (0, 0), "{a:?}");
         // Placing with the shift moves the layer's pixels by it.
         let generated = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: png_file(window.width(), window.height()), text: None };
@@ -981,6 +1135,94 @@ mod tests {
         let LayerContent::Raster(px) = &st.doc.layer(st.active_layer.unwrap()).unwrap().content else { panic!("a pixel layer") };
         assert_eq!(px.content_bounds().x0, window.x0 + 4);
         assert_eq!(px.content_bounds().y0, window.y0 + 2);
+    }
+
+    #[test]
+    fn replies_unlike_the_picture_are_rejected() {
+        let a = |similarity| crate::genai_align::Alignment { similarity, ..Default::default() };
+        assert!(verdict(&a(Some(0.93))).is_ok());
+        assert!(verdict(&a(None)).is_ok(), "a ring that can't tell accepts the reply");
+        let e = verdict(&a(Some(0.05))).unwrap_err();
+        assert!(e.contains("doesn't match") && e.contains("0.05"), "{e}");
+    }
+
+    #[test]
+    fn only_one_image_is_sent_with_the_outline_outside_the_selection() {
+        let mut s = Session::new();
+        let doc = photocraft_io::import("t.png", &texture_png(0, 0, 240, 160)).unwrap().document;
+        s.add_document(doc, None);
+        s.execute("select.rect", json!({"x": 90, "y": 60, "width": 60, "height": 40})).unwrap();
+        let st = s.active().unwrap();
+        let (doc, sel) = (st.doc.clone(), st.doc.selection.clone().unwrap());
+        let (window, _) = context_window(sel.content_bounds(), doc.bounds()).unwrap();
+        let reference = context_images(&doc, &sel, window, 4096, CONTEXT_EXPAND, CONTEXT_FEATHER).unwrap();
+        let decoded = photocraft_codecs::decode(&reference.photo).unwrap();
+        let rgba = decoded.to_rgba8();
+        let at = |x: i32, y: i32| {
+            let i = (((y - window.y0) as u32 * decoded.width() + (x - window.x0) as u32) * 4) as usize;
+            [rgba[i], rgba[i + 1], rgba[i + 2]]
+        };
+        // The selection's last column is 149; the line starts 24 px past it.
+        let close = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 2);
+        assert_eq!(at(174, 80), [255, 0, 0], "the outline");
+        assert!(close(at(120, 80), texel(120, 80)), "inside the selection: the photo itself");
+        assert!(close(at(165, 80), texel(165, 80)), "where the layer can show the reply: no line");
+    }
+
+    #[test]
+    fn a_blank_or_unrelated_reply_is_rejected_and_the_picture_accepted() {
+        let mut s = Session::new();
+        let doc = photocraft_io::import("t.png", &texture_png(0, 0, 240, 160)).unwrap().document;
+        s.add_document(doc, None);
+        s.execute("select.rect", json!({"x": 90, "y": 60, "width": 60, "height": 40})).unwrap();
+        let st = s.active().unwrap();
+        let (doc, sel) = (st.doc.clone(), st.doc.selection.clone().unwrap());
+        let (window, _) = context_window(sel.content_bounds(), doc.bounds()).unwrap();
+        let reference = context_images(&doc, &sel, window, 4096, CONTEXT_EXPAND, CONTEXT_FEATHER).unwrap();
+        // A blank reply (black around a white selection: what a model returning a mask sends).
+        let (w, h) = (window.width() as usize, window.height() as usize);
+        let blank: Vec<f32> = reference.cover.iter().flat_map(|c| [*c; 3]).collect();
+        let blank = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: png(&blank, w, h).unwrap(), text: None };
+        let a = align_reply(&blank, &reference, window);
+        assert!(verdict(&a).is_err(), "{a:?}");
+        // An unrelated scene.
+        let other = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: texture_png(5000, 9000, window.width(), window.height()), text: None };
+        let a = align_reply(&other, &reference, window);
+        assert!(verdict(&a).is_err(), "{a:?}");
+        // A faithful picture passes, with a similarity close to 1, even with the outline left in.
+        let picture = photocraft_genai::Generated { mime_type: "image/png".into(), bytes: reference.photo.clone(), text: None };
+        let a = align_reply(&picture, &reference, window);
+        assert!(verdict(&a).is_ok() && a.similarity.unwrap() > 0.9, "{a:?}");
+    }
+
+    #[test]
+    fn a_rejected_reply_is_asked_for_once_more() {
+        // Accepted at once.
+        assert_eq!(with_retry(MAX_ATTEMPTS, |_| Ok(Ok::<_, String>("ok"))).unwrap(), ("ok", 1));
+        // Rejected, then accepted.
+        let mut calls = 0;
+        let r = with_retry(MAX_ATTEMPTS, |n| {
+            calls += 1;
+            Ok(if n == 1 { Err("not the picture".to_string()) } else { Ok(n) })
+        });
+        assert_eq!((r.unwrap(), calls), ((2, 2), 2));
+        // Rejected every time: the last reason is the error, after exactly MAX_ATTEMPTS requests.
+        let mut calls = 0;
+        let r = with_retry(MAX_ATTEMPTS, |n| {
+            calls += 1;
+            Ok(Err::<(), _>(format!("miss {n}")))
+        });
+        assert!(matches!(r, Err(EngineError::Other(ref m)) if m == "miss 2"), "{r:?}");
+        assert_eq!(calls, MAX_ATTEMPTS);
+        // A network error or a cancellation is not retried.
+        let mut calls = 0;
+        let r = with_retry(MAX_ATTEMPTS, |_| {
+            calls += 1;
+            Err::<std::result::Result<(), String>, _>(EngineError::Cancelled)
+        });
+        assert!(matches!(r, Err(EngineError::Cancelled)));
+        assert_eq!(calls, 1);
+        assert!(with_retry(0, |_| Ok(Ok::<_, String>(()))).is_err());
     }
 
     #[test]

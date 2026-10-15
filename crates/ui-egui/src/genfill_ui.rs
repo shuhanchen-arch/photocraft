@@ -13,18 +13,20 @@ use crate::PhotocraftApp;
 pub const COMMAND: &str = photocraft_engine::genai_cmds::ID;
 const MARK: &str = "__generativeFill";
 /// Params sent to the engine.
-const KEYS: [&str; 5] = ["prompt", "context", "model", "imageSize", "feather"];
+const KEYS: [&str; 6] = ["prompt", "context", "sampleLayer", "model", "imageSize", "feather"];
 /// Params remembered in `dialogs[COMMAND]` (model and size live in `prefs.ai`).
-const REMEMBERED: [&str; 1] = ["feather"];
+const REMEMBERED: [&str; 2] = ["feather", "sampleLayer"];
 /// The models offered in the dialog and Preferences (any other name can be passed through the
 /// command or `prefs.set`).
-pub const MODELS: [(&str, &str); 4] = [
+/// `gemini-2.5-flash-image` is gone: Google shut it down on 2026-10-02.
+pub const MODELS: [(&str, &str); 3] = [
     ("gemini-nano-banana-2.1", "Nano Banana 2.1 (default)"),
     ("gemini-3-pro-image", "Nano Banana Pro (best quality)"),
     ("gemini-3.1-flash-lite-image", "Nano Banana 2 Lite (fastest, 1K only)"),
-    ("gemini-2.5-flash-image", "Nano Banana (legacy)"),
 ];
 pub const SIZES: [(&str, &str); 4] = [("auto", "Auto"), ("1K", "1K"), ("2K", "2K"), ("4K", "4K")];
+/// Which layers the surroundings are read from (the command's `sampleLayer`).
+pub const SAMPLES: [(&str, &str); 3] = [("all", "All Layers"), ("currentAndBelow", "Current & Below"), ("current", "Current Layer")];
 
 pub fn owns(fields: &Map<String, Value>) -> bool {
     fields.contains_key(MARK)
@@ -36,6 +38,7 @@ fn valid(key: &str, v: &Value) -> bool {
         "imageSize" => v.as_str().is_some_and(|s| SIZES.iter().any(|(id, _)| *id == s)),
         "feather" => v.as_f64().is_some_and(|f| f.is_finite() && (0.0..=250.0).contains(&f)),
         "context" => v.is_boolean(),
+        "sampleLayer" => v.as_str().is_some_and(|s| SAMPLES.iter().any(|(id, _)| *id == s)),
         _ => false,
     }
 }
@@ -53,6 +56,7 @@ pub fn fields(app: &PhotocraftApp) -> Map<String, Value> {
     f.insert("model".into(), json!(model));
     f.insert("imageSize".into(), json!(size));
     f.insert("context".into(), json!(ai.use_surrounding_image));
+    f.insert("sampleLayer".into(), json!("all"));
     // The command's own default with the surrounding image: it hides the seam.
     f.insert("feather".into(), json!(if ai.use_surrounding_image { 4.0 } else { 0.0 }));
     f.insert("__hasKey".into(), json!(has_key(app)));
@@ -125,6 +129,16 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     {
         f.insert("context".into(), json!(context));
     }
+    ui.add_enabled_ui(context, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(tl!("Sample:"));
+            let mut sample = f.get("sampleLayer").and_then(Value::as_str).unwrap_or("all").to_string();
+            let options: Vec<(String, &str)> = SAMPLES.iter().map(|(id, label)| (id.to_string(), *label)).collect();
+            if crate::widgets::dropdown(ui, "genfill-sample", &mut sample, &options, 160.0) {
+                f.insert("sampleLayer".into(), json!(sample));
+            }
+        });
+    });
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.label(tl!("Model:"));
@@ -238,6 +252,23 @@ mod tests {
         assert_eq!(f["imageSize"], "auto", "an invalid saved size falls back");
         assert_eq!(f["feather"], 6.0);
         assert_eq!(f["prompt"], "", "the prompt is never restored");
+    }
+
+    #[test]
+    fn the_sample_choice_is_sent_and_remembered() {
+        let mut app = app();
+        let f = fields(&app);
+        assert_eq!(f["sampleLayer"], "all");
+        assert_eq!(params(&f)["sampleLayer"], "all");
+        app.session.prefs.edit(|p| {
+            p.dialogs.insert(COMMAND.into(), json!({"sampleLayer": "current"}));
+        });
+        assert_eq!(fields(&app)["sampleLayer"], "current");
+        app.session.prefs.edit(|p| {
+            p.dialogs.insert(COMMAND.into(), json!({"sampleLayer": "nonsense"}));
+        });
+        assert_eq!(fields(&app)["sampleLayer"], "all", "an unknown saved choice falls back");
+        assert!(SAMPLES.iter().all(|(_, label)| crate::i18n::Lang::all().filter(|l| l.complete_menus()).all(|l| crate::i18n::has(l, label))));
     }
 
     #[test]

@@ -12,6 +12,10 @@
 //! [`COARSE_SIDE`] px on its long side, then pixel by pixel around the coarse answer at full
 //! size. An offset is only used when it clearly beats leaving the reply where it is
 //! ([`MIN_GAIN`]) and isn't at the edge of the range; otherwise the result is no offset.
+//!
+//! The same ring tells whether the reply is the picture at all: [`similarity`] (normalised
+//! cross-correlation at the offset used) is high for a faithful redraw, whatever its brightness,
+//! and near zero when the model returned something else (the mask, an unrelated scene).
 
 use rayon::prelude::*;
 
@@ -23,6 +27,9 @@ const MIN_RING: usize = 200;
 const MAX_RING: usize = 250_000;
 /// An offset must cut the zero-offset error to this fraction or less to be used.
 const MIN_GAIN: f64 = 0.95;
+/// Below this luminance variance (a standard deviation of 1 %) a ring is flat: it can't tell a
+/// faithful reply from a wrong one.
+const FLAT_VARIANCE: f64 = 1e-4;
 
 /// The translation found, in window pixels: place the reply `dx`, `dy` further right and down.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -32,6 +39,8 @@ pub(crate) struct Alignment {
     /// RMS luminance difference on the ring at the offset found and at no offset (0..1).
     pub error: f64,
     pub error_unshifted: f64,
+    /// [`similarity`] at the offset used; `None` when the ring can't tell.
+    pub similarity: Option<f64>,
 }
 
 /// Where to compare and how far to look: the ring from `gap` to `gap + band` px outside the
@@ -138,19 +147,67 @@ fn search(orig: &[f32], gen_: &[f32], ring: &[(usize, usize)], w: usize, h: usiz
         .min_by(|a, b| a.1.total_cmp(&b.1).then((a.0.0.abs() + a.0.1.abs()).cmp(&(b.0.0.abs() + b.0.1.abs()))))
 }
 
+/// Normalised cross-correlation (−1..1) of `orig(p)` and `gen_(p − shift)` over the ring:
+/// 1 for the same picture under any brightness and contrast, about 0 for an unrelated one, and
+/// 0 for a flat reply. `None` when the ring is too small or the original is flat there.
+pub(crate) fn similarity(orig: &[f32], gen_: &[f32], ring: &[(usize, usize)], w: usize, h: usize, (dx, dy): (i32, i32)) -> Option<f64> {
+    let (mut n, mut so, mut sg, mut soo, mut sgg, mut sog) = (0usize, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for &(x, y) in ring {
+        let (gx, gy) = (x as i64 - i64::from(dx), y as i64 - i64::from(dy));
+        if gx < 0 || gy < 0 || gx >= w as i64 || gy >= h as i64 {
+            continue;
+        }
+        let (Some(&o), Some(&g)) = (orig.get(y * w + x), gen_.get(gy as usize * w + gx as usize)) else { continue };
+        let (o, g) = (f64::from(o), f64::from(g));
+        n += 1;
+        so += o;
+        sg += g;
+        soo += o * o;
+        sgg += g * g;
+        sog += o * g;
+    }
+    if n < MIN_RING || n * 2 < ring.len() {
+        return None;
+    }
+    let n = n as f64;
+    let (mo, mg) = (so / n, sg / n);
+    let (vo, vg, cov) = (soo / n - mo * mo, sgg / n - mg * mg, sog / n - mo * mg);
+    if vo < FLAT_VARIANCE {
+        return None;
+    }
+    if vg < FLAT_VARIANCE {
+        return Some(0.0);
+    }
+    Some((cov / (vo * vg).sqrt()).clamp(-1.0, 1.0))
+}
+
 /// The translation that lines the reply (`gen_`, luminance, `gw × gh`) up with the original
 /// window (`orig`, luminance, `w × h`) on the ring `reach` describes outside the selection
-/// coverage `cover` (`w × h`). No offset (`dx = dy = 0`) when nothing clearly better is found.
+/// coverage `cover` (`w × h`), and how alike the two are there at that offset. No offset
+/// (`dx = dy = 0`) when nothing clearly better is found.
 pub(crate) fn estimate(orig: &[f32], cover: &[f32], (w, h): (usize, usize), gen_: &[f32], (gw, gh): (usize, usize), reach: Reach) -> Alignment {
+    if w == 0 || h == 0 || orig.len() != w * h || cover.len() != w * h || gen_.len() != gw * gh || !reach.max_shift.is_finite() {
+        return Alignment::default();
+    }
+    let g_f = resample(gen_, gw, gh, w, h);
+    let ring_f = ring(cover, w, h, reach.gap, reach.band);
+    if g_f.len() != w * h {
+        return Alignment::default();
+    }
+    let mut a = shift(orig, cover, (w, h), &g_f, &ring_f, reach);
+    a.similarity = similarity(orig, &g_f, &ring_f, w, h, (a.dx, a.dy));
+    a
+}
+
+/// [`estimate`]'s search, with the reply already at the window's size (`g_f`) and the full-size
+/// ring (`ring_f`).
+fn shift(orig: &[f32], cover: &[f32], (w, h): (usize, usize), g_f: &[f32], ring_f: &[(usize, usize)], reach: Reach) -> Alignment {
     let Reach { gap, band, max_shift } = reach;
     let none = Alignment::default();
-    if w == 0 || h == 0 || orig.len() != w * h || cover.len() != w * h || gen_.len() != gw * gh || !max_shift.is_finite() {
-        return none;
-    }
     // Coarse: the whole range on small copies.
     let s = (COARSE_SIDE as f64 / w.max(h) as f64).min(1.0);
     let (cw, ch) = (((w as f64 * s).round() as usize).max(1), ((h as f64 * s).round() as usize).max(1));
-    let (o_c, g_c, cov_c) = (resample(orig, w, h, cw, ch), resample(gen_, gw, gh, cw, ch), resample(cover, w, h, cw, ch));
+    let (o_c, g_c, cov_c) = (resample(orig, w, h, cw, ch), resample(g_f, w, h, cw, ch), resample(cover, w, h, cw, ch));
     let ring_c = ring(&cov_c, cw, ch, gap * s as f32, (band * s as f32).max(4.0));
     if ring_c.len() < MIN_RING {
         return none;
@@ -162,17 +219,15 @@ pub(crate) fn estimate(orig: &[f32], cover: &[f32], (w, h): (usize, usize), gen_
         return none; // At the edge of the range: the true offset may lie beyond it.
     }
     // Fine: one coarse step around the answer, at full size.
-    let g_f = resample(gen_, gw, gh, w, h);
-    let ring_f = ring(cover, w, h, gap, band);
     let centre = ((f64::from(best_c.0) / s).round() as i32, (f64::from(best_c.1) / s).round() as i32);
     let radius_f = (1.0 / s).ceil() as i32 + 1;
-    let Some((best, error)) = search(orig, &g_f, &ring_f, w, h, centre, radius_f) else { return none };
-    let Some(error_unshifted) = error_at(orig, &g_f, &ring_f, w, h, (0, 0)) else { return none };
+    let Some((best, error)) = search(orig, g_f, ring_f, w, h, centre, radius_f) else { return none };
+    let Some(error_unshifted) = error_at(orig, g_f, ring_f, w, h, (0, 0)) else { return none };
     let limit = max_shift.ceil() as i32;
     if best.0.abs() > limit || best.1.abs() > limit || error > error_unshifted * MIN_GAIN {
         return Alignment { error: error_unshifted, error_unshifted, ..none };
     }
-    Alignment { dx: best.0, dy: best.1, error, error_unshifted }
+    Alignment { dx: best.0, dy: best.1, error, error_unshifted, similarity: None }
 }
 
 #[cfg(test)]
@@ -259,15 +314,39 @@ mod tests {
         let flat = vec![0.5f32; w * h];
         let cov = cover(w, h, 80, 60, 220, 140);
         // A flat picture: every offset is as good, so none is used.
-        assert_eq!(estimate(&flat, &cov, (w, h), &flat, (w, h), REACH), Alignment::default());
+        let a = estimate(&flat, &cov, (w, h), &flat, (w, h), REACH);
+        assert_eq!((a.dx, a.dy, a.similarity), (0, 0, None), "a flat ring can't tell");
         // A selection filling the window leaves no ring.
         let all = vec![1.0f32; w * h];
         let tex = texture(w, h);
-        assert_eq!(estimate(&tex, &all, (w, h), &shifted(&tex, w, h, 3, 3), (w, h), REACH), Alignment::default());
+        let a = estimate(&tex, &all, (w, h), &shifted(&tex, w, h, 3, 3), (w, h), REACH);
+        assert_eq!((a.dx, a.dy, a.similarity), (0, 0, None));
         // Mismatched or empty buffers.
         assert_eq!(estimate(&tex, &cov, (w, h), &tex[..10], (w, h), REACH), Alignment::default());
         assert_eq!(estimate(&[], &[], (0, 0), &[], (0, 0), REACH), Alignment::default());
         assert_eq!(estimate(&tex, &cov, (w, h), &tex, (w, h), Reach { max_shift: f32::NAN, ..REACH }), Alignment::default());
+    }
+
+    #[test]
+    fn similarity_tells_the_picture_from_something_else() {
+        let (w, h) = (300, 200);
+        let orig = texture(w, h);
+        let cov = cover(w, h, 80, 60, 220, 140);
+        // A faithful redraw, shifted, dimmer and with less contrast: still the same picture.
+        let redraw: Vec<f32> = shifted(&orig, w, h, 5, -3).iter().map(|v| v * 0.8 + 0.05).collect();
+        let a = estimate(&orig, &cov, (w, h), &redraw, (w, h), REACH);
+        assert!(a.similarity.unwrap() > 0.95, "{a:?}");
+        // The mask came back (black outside the selection, white inside): flat on the ring.
+        let a = estimate(&orig, &cov, (w, h), &cov, (w, h), REACH);
+        assert_eq!(a.similarity, Some(0.0), "{a:?}");
+        // An unrelated scene.
+        let other: Vec<f32> = (0..w * h).map(|i| ((i * 7919 + i / 13 * 104_729) % 1000) as f32 / 1000.0).collect();
+        let a = estimate(&orig, &cov, (w, h), &other, (w, h), REACH);
+        assert!(a.similarity.unwrap() < 0.3, "{a:?}");
+        // Out of range offsets and tiny rings give no verdict.
+        let r = ring(&cov, w, h, 8.0, 24.0);
+        assert!(similarity(&orig, &orig, &r, w, h, (w as i32, 0)).is_none());
+        assert!(similarity(&orig, &orig, &r[..10], w, h, (0, 0)).is_none());
     }
 
     #[test]
