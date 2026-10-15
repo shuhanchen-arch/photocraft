@@ -329,6 +329,21 @@ mod tests {
     }
 
     #[test]
+    fn a_jpeg_reply_is_placed_too() {
+        // The image models answer in JPEG only (`photocraft_genai::OUTPUT_MIME`).
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 48, "height": 24, "background": "#00ff00"})).unwrap();
+        let doc = &s.active().unwrap().doc;
+        let jpeg = photocraft_io::export(doc, "jpg", &photocraft_io::ExportOptions::default()).unwrap().bytes;
+        assert!(jpeg.starts_with(&[0xFF, 0xD8]), "a JPEG file");
+        let mut s = session_with_selection();
+        let sel = s.active().unwrap().doc.selection.clone().unwrap();
+        let generated = photocraft_genai::Generated { mime_type: photocraft_genai::OUTPUT_MIME.into(), bytes: jpeg, text: None };
+        let out = place(&mut s, generated, &sel, Rect::new(8, 8, 40, 24), "Generative Fill: jpeg", 0.0, json!({})).unwrap();
+        assert_eq!(out["generatedSize"], json!([48, 24]));
+    }
+
+    #[test]
     fn an_unreadable_reply_is_an_error_and_changes_nothing() {
         let mut s = session_with_selection();
         let before = s.active().unwrap().doc.layers.len();

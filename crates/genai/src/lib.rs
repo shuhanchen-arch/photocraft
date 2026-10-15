@@ -49,6 +49,9 @@ pub const ASPECT_RATIOS: [(&str, u32, u32); 10] = [
     ("21:9", 21, 9),
 ];
 
+/// The output format requested: the only one the image models accept.
+pub const OUTPUT_MIME: &str = "image/jpeg";
+
 /// The output sizes the image models accept (the `K` must be upper case).
 pub const IMAGE_SIZES: [&str; 3] = ["1K", "2K", "4K"];
 
@@ -137,7 +140,8 @@ impl Request {
         let mut input: Vec<Value> =
             self.images.iter().map(|i| json!({"type": "image", "mime_type": i.mime_type, "data": BASE64.encode(&i.bytes)})).collect();
         input.push(json!({"type": "text", "text": self.prompt}));
-        let mut format = json!({"type": "image", "mime_type": "image/png"});
+        // The image models only produce JPEG (`image/png` is refused with HTTP 400).
+        let mut format = json!({"type": "image", "mime_type": OUTPUT_MIME});
         if let Some(r) = &self.aspect_ratio {
             format["aspect_ratio"] = json!(r);
         }
@@ -153,7 +157,7 @@ impl Request {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Generated {
     pub mime_type: String,
-    /// The encoded file (PNG unless the model chose otherwise).
+    /// The encoded file ([`OUTPUT_MIME`] unless the model chose otherwise).
     pub bytes: Vec<u8>,
     /// Any text the model returned alongside the image.
     pub text: Option<String>,
@@ -286,7 +290,7 @@ pub fn parse_response(v: &Value) -> Result<Generated> {
     if bytes.is_empty() {
         return Err(Error::Malformed("the image is empty".into()));
     }
-    let mime_type = image.get("mime_type").or_else(|| image.get("mimeType")).and_then(Value::as_str).unwrap_or("image/png").to_string();
+    let mime_type = image.get("mime_type").or_else(|| image.get("mimeType")).and_then(Value::as_str).unwrap_or(OUTPUT_MIME).to_string();
     Ok(Generated { mime_type, bytes, text })
 }
 
@@ -337,7 +341,7 @@ mod tests {
         assert_eq!(b["store"], false);
         assert_eq!(b["input"][0], json!({"type": "image", "mime_type": "image/png", "data": "AQID"}));
         assert_eq!(b["input"][1], json!({"type": "text", "text": "a red umbrella"}));
-        assert_eq!(b["response_format"], json!({"type": "image", "mime_type": "image/png", "aspect_ratio": "16:9", "image_size": "2K"}));
+        assert_eq!(b["response_format"], json!({"type": "image", "mime_type": "image/jpeg", "aspect_ratio": "16:9", "image_size": "2K"}));
     }
 
     #[test]
